@@ -2,10 +2,10 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::{env, fs};
+use std::time::{Duration, Instant};
+use std::{env, fs, thread};
 
 #[derive(Parser)]
 #[command(
@@ -24,7 +24,113 @@ struct Args {
     /// Pass --dangerously-skip-permissions to claude.
     #[arg(long = "dangerous")]
     dangerous: bool,
+
+    /// Grant write (push/merge/release) access via the gh proxy.
+    #[arg(long = "write")]
+    write: bool,
+
+    /// Additional GitHub repos (owner/repo) the proxy is allowed to access.
+    /// The cwd's origin remote is always included automatically. Repeatable.
+    #[arg(long = "repo", value_name = "OWNER/REPO")]
+    allowed_repos: Vec<String>,
+
+    /// Skip starting the gh proxy (no gh available inside the jail).
+    #[arg(long = "no-github-auth")]
+    no_github_auth: bool,
+
+    /// Print each command before running it and dump the full bwrap arg list.
+    #[arg(long = "debug")]
+    debug: bool,
 }
+
+// ── gh proxy server ───────────────────────────────────────────────────────────
+
+struct GhProxy {
+    socket_path: PathBuf,
+    child: std::process::Child,
+}
+
+impl GhProxy {
+    /// Spawn `gh-jail-server` and wait for the socket to become available.
+    fn start(
+        socket_path: PathBuf,
+        write_mode: bool,
+        allowed_repos: &[String],
+        debug: bool,
+    ) -> Result<Self> {
+        let server_bin = env::var("CLAUDE_JAIL_GH_SERVER").unwrap_or_else(|_| {
+            "gh-jail-server".into()
+        });
+
+        let mut cmd = Command::new(&server_bin);
+        cmd.arg("--socket").arg(&socket_path);
+        if write_mode {
+            cmd.arg("--write");
+        }
+        for repo in allowed_repos {
+            cmd.arg("--repo").arg(repo);
+        }
+        dbg_cmd(&cmd, debug);
+
+        let child = cmd
+            .spawn()
+            .with_context(|| format!("spawning {server_bin}"))?;
+
+        // Poll until the socket file appears (up to 5 s).
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if socket_path.exists() {
+                return Ok(Self { socket_path, child });
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+
+        anyhow::bail!(
+            "gh-jail-server did not create socket at {} within 5 s",
+            socket_path.display()
+        );
+    }
+}
+
+impl Drop for GhProxy {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = fs::remove_file(&self.socket_path);
+    }
+}
+
+// ── Synthetic git config ──────────────────────────────────────────────────────
+
+fn write_synthetic_gitconfig(dir: &Path) -> Result<PathBuf> {
+    let name = git_global_config("user.name").unwrap_or_else(|| "Claude".into());
+    let email = git_global_config("user.email").unwrap_or_else(|| "claude@localhost".into());
+
+    let contents = format!(
+        "[user]\n\tname = {name}\n\temail = {email}\n\
+         [commit]\n\tgpgsign = false\n\
+         [tag]\n\tgpgsign = false\n\
+         [credential \"https://github.com\"]\n\thelper = gh auth git-credential\n\
+         [url \"https://github.com/\"]\n\tinsteadOf = git@github.com:\n"
+    );
+
+    let path = dir.join("gitconfig");
+    fs::write(&path, contents).context("writing synthetic gitconfig")?;
+    Ok(path)
+}
+
+fn git_global_config(key: &str) -> Option<String> {
+    Command::new("git")
+        .args(["config", "--global", key])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
 
 fn main() -> Result<()> {
     let args = Args::parse();
@@ -39,27 +145,70 @@ fn main() -> Result<()> {
     let nix_socket = env::var("AGENTIC_NIX_DAEMON")
         .unwrap_or_else(|_| "/nix/var/nix/daemon-socket/socket".to_string());
 
-    // Pre-evaluate direnv on the host (trust is already established at the real path)
     let direnv_env = if cwd.join(".envrc").exists() {
         capture_direnv_env(&cwd).unwrap_or_default()
     } else {
         HashMap::new()
     };
 
+    let gitconfig_dir = tempfile::Builder::new()
+        .prefix("claude-jail-git-")
+        .tempdir()
+        .context("creating gitconfig tempdir")?;
+    let gitconfig_host_path = write_synthetic_gitconfig(gitconfig_dir.path())?;
+
+    // Build the allowed-repos list: cwd origin + any --repo flags.
+    let mut allowed_repos = args.allowed_repos.clone();
+    if let Some(origin) = github_repo_from_remote(&cwd) {
+        if !allowed_repos.contains(&origin) {
+            allowed_repos.insert(0, origin);
+        }
+    }
+
+    // Start the gh proxy server (unless opted out).
+    // The TempDir is kept in the tuple so it lives until gh_proxy drops (after bwrap exits).
+    let gh_proxy: Option<(GhProxy, tempfile::TempDir)> = if args.no_github_auth {
+        None
+    } else {
+        let socket_dir = tempfile::Builder::new()
+            .prefix("claude-jail-gh-")
+            .tempdir()
+            .context("creating gh socket tempdir")?;
+        let socket_path = socket_dir.path().join("gh.sock");
+        match GhProxy::start(socket_path, args.write, &allowed_repos, args.debug) {
+            Ok(proxy) => {
+                eprintln!(
+                    "claude-jail: gh proxy listening at {}",
+                    proxy.socket_path.display()
+                );
+                Some((proxy, socket_dir))
+            }
+            Err(e) => {
+                eprintln!("claude-jail: warning: could not start gh proxy: {e}");
+                eprintln!("claude-jail: gh will not be available inside the jail");
+                None
+            }
+        }
+    };
+
     let mut b: Vec<OsString> = Vec::new();
 
-    // Isolation: unshare everything except network (Claude needs internet)
     push(&mut b, &["--unshare-all", "--share-net"]);
-
-    // Virtual filesystems
     push(&mut b, &["--proc", "/proc"]);
     push(&mut b, &["--dev", "/dev"]);
     push(&mut b, &["--tmpfs", "/tmp"]);
 
-    // Nix store read-only
+    push(
+        &mut b,
+        &[
+            "--ro-bind",
+            &gitconfig_host_path.to_string_lossy(),
+            "/tmp/gitconfig",
+        ],
+    );
+
     push(&mut b, &["--ro-bind", "/nix", "/nix"]);
 
-    // Nix daemon socket — bind if it exists
     if Path::new(&nix_socket).exists() {
         push(&mut b, &["--bind", &nix_socket, &nix_socket]);
     } else {
@@ -67,25 +216,15 @@ fn main() -> Result<()> {
         eprintln!("  set AGENTIC_NIX_DAEMON to override");
     }
 
-    // Nix config and registry.
-    // On NixOS: /etc/nix/registry.json -> /etc/static/nix/registry.json -> /nix/store/...
-    // Both hops must be visible; /nix is already mounted, /etc/static is not.
     ro_bind_if_exists(&mut b, "/etc/static", "/etc/static");
     ro_bind_if_exists(&mut b, "/etc/nix", "/etc/nix");
-    // Profiles needed for `nix profile` and PATH-from-profile patterns
     ro_bind_if_exists(&mut b, "/nix/var/nix/profiles", "/nix/var/nix/profiles");
-    // Current NixOS system profile (for nix-env -qaP etc.)
     ro_bind_if_exists(&mut b, "/run/current-system", "/run/current-system");
 
-    // SSL/TLS trust anchors.
-    // NIX_SSL_CERT_FILE is set by the wrapper to pkgs.cacert so this always
-    // resolves even if /etc/ssl is absent; the path lives under /nix which is
-    // already mounted, so no extra bind is needed.
     for p in ["/etc/ssl", "/etc/ca-certificates", "/etc/pki/tls"] {
         ro_bind_if_exists(&mut b, p, p);
     }
 
-    // DNS and name resolution
     for p in [
         "/etc/resolv.conf",
         "/etc/hosts",
@@ -97,48 +236,38 @@ fn main() -> Result<()> {
         ro_bind_if_exists(&mut b, p, p);
     }
 
-    // Home directory as tmpfs; sub-mounts layered on top below
     b.push("--tmpfs".into());
     b.push(home.as_os_str().into());
 
-    // ~/bin — pre-built tool symlinks
     bind(&mut b, "--ro-bind", &bin_dir, &home.join("bin"));
 
-    // ~/.claude — read-write so Claude can persist conversation state
     let dot_claude = home.join(".claude");
     if !dot_claude.exists() {
         fs::create_dir_all(&dot_claude).context("creating ~/.claude")?;
     }
     bind(&mut b, "--bind", &dot_claude, &home.join(".claude"));
 
-    // ~/.claude.json — Claude Code settings file
     let dot_claude_json = home.join(".claude.json");
     if dot_claude_json.exists() {
-        bind(&mut b, "--bind", &dot_claude_json, &home.join(".claude.json"));
+        bind(
+            &mut b,
+            "--bind",
+            &dot_claude_json,
+            &home.join(".claude.json"),
+        );
     }
 
-    // ~/.gitconfig — read-only for git identity in commits
-    ro_bind_if_exists(
-        &mut b,
-        &home.join(".gitconfig").to_string_lossy(),
-        &home.join(".gitconfig").to_string_lossy(),
-    );
-
-    // ~/.config/git — git config dir (create parent dir first)
-    let git_cfg_dir = home.join(".config").join("git");
-    if git_cfg_dir.exists() {
-        push(&mut b, &["--dir", &home.join(".config").to_string_lossy()]);
-        bind(&mut b, "--ro-bind", &git_cfg_dir, &home.join(".config").join("git"));
-    }
-
-    // ~/.ssh/known_hosts — read-only for SSH host verification
     let known_hosts = home.join(".ssh").join("known_hosts");
     if known_hosts.exists() {
         push(&mut b, &["--dir", &home.join(".ssh").to_string_lossy()]);
-        bind(&mut b, "--ro-bind", &known_hosts, &home.join(".ssh").join("known_hosts"));
+        bind(
+            &mut b,
+            "--ro-bind",
+            &known_hosts,
+            &home.join(".ssh").join("known_hosts"),
+        );
     }
 
-    // SSH agent socket — forward for git-over-SSH auth
     if let Ok(sock) = env::var("SSH_AUTH_SOCK") {
         let sock_path = PathBuf::from(&sock);
         if sock_path.exists() {
@@ -146,11 +275,17 @@ fn main() -> Result<()> {
         }
     }
 
-    // Detect git worktree context so we can bind the full working tree and
-    // object store rather than just the CWD subdirectory.
+    // Bind the gh proxy socket directory so the socket is reachable inside.
+    if let Some((ref proxy, _)) = gh_proxy {
+        let sock_dir = proxy
+            .socket_path
+            .parent()
+            .expect("socket path has parent");
+        bind(&mut b, "--bind", sock_dir, sock_dir);
+    }
+
     let git_ctx = detect_git_worktree(&cwd);
 
-    // Bind the project working tree root RW (falls back to CWD if not in a repo)
     let bind_root: &Path = git_ctx
         .as_ref()
         .map_or(cwd.as_path(), |(wt, _)| wt.as_path());
@@ -159,22 +294,17 @@ fn main() -> Result<()> {
     }
     bind(&mut b, "--bind", bind_root, bind_root);
 
-    // Git bare-repo mounts (ordered: common-dir bind → hooks mask)
     if let Some((wt_root, common_dir)) = &git_ctx {
-        // Bind the common git dir (e.g. .bare) RW when it lives outside the worktree.
-        // For plain repos, common_dir == $WT/.git which is already covered above.
         if !common_dir.starts_with(wt_root) {
             if let Some(parent) = common_dir.parent() {
                 push(&mut b, &["--dir", &parent.to_string_lossy()]);
             }
             bind(&mut b, "--bind", common_dir, common_dir);
         }
-        // Mask hooks so the agent cannot plant code that runs on the host.
         let hooks = common_dir.join("hooks");
         push(&mut b, &["--tmpfs", &hooks.to_string_lossy()]);
     }
 
-    // Extra read-only paths — bind at real path (mkdir -p parent first)
     for path in &args.ro_paths {
         if let Some(parent) = path.parent() {
             push(&mut b, &["--dir", &parent.to_string_lossy()]);
@@ -182,7 +312,6 @@ fn main() -> Result<()> {
         bind(&mut b, "--ro-bind", path, path);
     }
 
-    // Extra read-write paths — bind at real path (mkdir -p parent first)
     for path in &args.rw_paths {
         if let Some(parent) = path.parent() {
             push(&mut b, &["--dir", &parent.to_string_lossy()]);
@@ -190,27 +319,26 @@ fn main() -> Result<()> {
         bind(&mut b, "--bind", path, path);
     }
 
-    // Clear inherited environment; set everything explicitly below.
     b.push("--clearenv".into());
 
-    // Core
     setenv(&mut b, "HOME", &home.to_string_lossy());
 
     let jail_path = match direnv_env.get("PATH") {
-        // Prepend ~/bin to whatever nix develop / direnv added
         Some(dp) => format!("{}/bin:{dp}", home.display()),
         None => format!("{}/bin", home.display()),
     };
     setenv(&mut b, "PATH", &jail_path);
 
-    setenv(&mut b, "USER", &env::var("USER").unwrap_or_else(|_| "user".into()));
+    setenv(
+        &mut b,
+        "USER",
+        &env::var("USER").unwrap_or_else(|_| "user".into()),
+    );
     passthrough(&mut b, "LOGNAME");
 
-    // Nix daemon
     setenv(&mut b, "NIX_REMOTE", "daemon");
     setenv(&mut b, "NIX_DAEMON_SOCKET_PATH", &nix_socket);
     passthrough(&mut b, "NIX_PATH");
-    // Merge experimental features: honour any host NIX_CONFIG then append ours
     let host_nix_config = env::var("NIX_CONFIG").unwrap_or_default();
     let nix_config = if host_nix_config.is_empty() {
         "extra-experimental-features = nix-command flakes".into()
@@ -219,7 +347,6 @@ fn main() -> Result<()> {
     };
     setenv(&mut b, "NIX_CONFIG", &nix_config);
 
-    // TLS — prefer NIX_SSL_CERT_FILE from host, fall back to well-known paths
     if let Ok(cert) = env::var("NIX_SSL_CERT_FILE") {
         setenv(&mut b, "NIX_SSL_CERT_FILE", &cert);
         setenv(&mut b, "SSL_CERT_FILE", &cert);
@@ -236,26 +363,37 @@ fn main() -> Result<()> {
         }
     }
 
-    // Terminal
     for var in ["TERM", "COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION"] {
         passthrough(&mut b, var);
     }
 
-    // Locale
-    for var in ["LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "LC_COLLATE", "LC_TIME"] {
-        passthrough(&mut b, var);
-    }
-
-    // Proxy settings
     for var in [
-        "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
-        "http_proxy", "https_proxy", "no_proxy",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LC_MESSAGES",
+        "LC_COLLATE",
+        "LC_TIME",
     ] {
         passthrough(&mut b, var);
     }
 
-    // Anthropic / Claude auth
-    for var in ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"] {
+    for var in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+    ] {
+        passthrough(&mut b, var);
+    }
+
+    for var in [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_AUTH_TOKEN",
+    ] {
         passthrough(&mut b, var);
     }
     for (k, v) in env::vars() {
@@ -264,12 +402,10 @@ fn main() -> Result<()> {
         }
     }
 
-    // SSH agent
     if let Ok(v) = env::var("SSH_AUTH_SOCK") {
         setenv(&mut b, "SSH_AUTH_SOCK", &v);
     }
 
-    // Git identity overrides (useful in CI / personal configs)
     for var in [
         "GIT_AUTHOR_NAME",
         "GIT_AUTHOR_EMAIL",
@@ -279,7 +415,17 @@ fn main() -> Result<()> {
         passthrough(&mut b, var);
     }
 
-    // direnv-provided variables (PATH already merged above)
+    setenv(&mut b, "GIT_CONFIG_GLOBAL", "/tmp/gitconfig");
+
+    // Expose the proxy socket path — no token needed inside the jail.
+    if let Some((ref proxy, _)) = gh_proxy {
+        setenv(
+            &mut b,
+            "GH_PROXY_SOCKET",
+            &proxy.socket_path.to_string_lossy(),
+        );
+    }
+
     for (k, v) in &direnv_env {
         if k == "PATH" {
             continue;
@@ -287,25 +433,45 @@ fn main() -> Result<()> {
         setenv(&mut b, k, v);
     }
 
-    // TMPDIR inside jail
     setenv(&mut b, "TMPDIR", "/tmp");
 
-    // Change to the real path so $PWD matches what the user expects
     b.push("--chdir".into());
     b.push(cwd.as_os_str().into());
 
-    // Command to exec
     b.push("--".into());
     b.push("claude".into());
     if args.dangerous {
         b.push("--dangerously-skip-permissions".into());
     }
 
-    let err = Command::new(&bwrap_path).args(&b).exec();
-    Err(anyhow::anyhow!("exec {bwrap_path}: {err}"))
+    if args.debug {
+        eprintln!("[debug] bwrap: {bwrap_path}");
+        for arg in &b {
+            eprintln!("[debug]   {:?}", arg);
+        }
+    }
+
+    let status = Command::new(&bwrap_path)
+        .args(&b)
+        .spawn()
+        .with_context(|| format!("spawning {bwrap_path}"))?
+        .wait()
+        .context("waiting for bwrap")?;
+
+    // GhProxy::drop kills the server and removes the socket.
+    drop(gh_proxy);
+    // gitconfig_dir TempDir drops here.
+
+    std::process::exit(status.code().unwrap_or(1));
 }
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+fn dbg_cmd(cmd: &Command, debug: bool) {
+    if debug {
+        eprintln!("[debug] {:?}", cmd);
+    }
+}
 
 fn push(b: &mut Vec<OsString>, args: &[&str]) {
     for a in args {
@@ -337,6 +503,25 @@ fn passthrough(b: &mut Vec<OsString>, key: &str) {
     if let Ok(val) = env::var(key) {
         setenv(b, key, &val);
     }
+}
+
+fn github_repo_from_remote(cwd: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .args(["-C", &cwd.to_string_lossy(), "remote", "get-url", "origin"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let url = std::str::from_utf8(&out.stdout).ok()?.trim();
+    let slug = if let Some(rest) = url.strip_prefix("git@github.com:") {
+        rest
+    } else if let Some(rest) = url.strip_prefix("https://github.com/") {
+        rest
+    } else {
+        return None;
+    };
+    Some(slug.trim_end_matches(".git").to_string())
 }
 
 fn detect_git_worktree(cwd: &Path) -> Option<(PathBuf, PathBuf)> {
@@ -377,7 +562,9 @@ fn capture_direnv_env(dir: &Path) -> Result<HashMap<String, String>> {
         return Ok(HashMap::new());
     }
 
-    // direnv export json: {"KEY": "value"} or {"KEY": null} for unsets
     let raw: HashMap<String, Option<String>> = serde_json::from_slice(&out.stdout)?;
-    Ok(raw.into_iter().filter_map(|(k, v)| v.map(|v| (k, v))).collect())
+    Ok(raw
+        .into_iter()
+        .filter_map(|(k, v)| v.map(|v| (k, v)))
+        .collect())
 }

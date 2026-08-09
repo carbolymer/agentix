@@ -19,6 +19,14 @@ path = "src/ingest/main.rs"
 name = "claude-jail"
 path = "src/jail/main.rs"
 
+[[bin]]
+name = "gh-jail-client"
+path = "src/gh_proxy/client.rs"
+
+[[bin]]
+name = "gh-jail-server"
+path = "src/gh_proxy/server.rs"
+
 [dependencies]
 rmcp = { version = "0.1", features = ["server", "transport-io", "macros"] }
 sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "tls-rustls", "chrono"] }
