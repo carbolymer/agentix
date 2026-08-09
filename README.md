@@ -308,6 +308,7 @@ nix run .#claude-jail --dangerous   # shorthand for the above
 | `--write` | Allow mutating GitHub operations via the gh proxy (releases, `api POST/PATCH/DELETE`) |
 | `--repo OWNER/REPO` | Add an extra GitHub repo the proxy may access. Repeatable. |
 | `--no-github-auth` | Skip the gh proxy; no `gh` available inside the jail |
+| `--allow-ssh` | Forward the host SSH agent socket into the jail. **Warning:** Claude can sign arbitrary SSH operations with your keys. Never combine with `--dangerous`. |
 | `--ro PATH` | Bind an extra path read-only at its real path. Repeatable. |
 | `--rw PATH` | Bind an extra path read-write at its real path. Repeatable. |
 | `--debug` | Print every host command and the full bwrap argument list before launching |
@@ -324,6 +325,7 @@ Network access is shared with the host. Everything else is constructed from scra
 | `~/.claude` | host `~/.claude` | read-write |
 | `~/.claude.json` | host `~/.claude.json` | read-write |
 | `~/.ssh/known_hosts` | host | read-only |
+| SSH agent socket | host (`--allow-ssh` only) | read-write |
 | `/tmp/gitconfig` | synthetic (host identity) | read-only |
 | project worktree | host worktree root | read-write |
 | bare git common dir | host `.bare/` or `.git/` | read-write |
@@ -384,7 +386,7 @@ the jail still launches). Pass `--no-github-auth` to skip the proxy entirely.
 | Concern | Mitigation |
 |---|---|
 | Host filesystem | tmpfs home; only explicit bind mounts visible |
-| SSH private keys | not mounted; only `known_hosts` and the agent socket are bound |
+| SSH private keys | not mounted; agent socket excluded by default (`--allow-ssh` opts in with a warning) |
 | Git hooks | `hooks/` masked with tmpfs; Claude cannot plant host-side hooks |
 | Git identity | synthetic gitconfig; real `~/.gitconfig` not visible |
 | GitHub credentials | not injected; all `gh` calls go through the policy-checking proxy |

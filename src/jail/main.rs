@@ -38,6 +38,12 @@ struct Args {
     #[arg(long = "no-github-auth")]
     no_github_auth: bool,
 
+    /// Forward the host SSH agent socket into the jail.
+    /// WARNING: this lets Claude sign arbitrary SSH operations with your keys.
+    /// Never combine with --dangerous.
+    #[arg(long = "allow-ssh")]
+    allow_ssh: bool,
+
     /// Print each command before running it and dump the full bwrap arg list.
     #[arg(long = "debug")]
     debug: bool,
@@ -268,10 +274,17 @@ fn main() -> Result<()> {
         );
     }
 
-    if let Ok(sock) = env::var("SSH_AUTH_SOCK") {
-        let sock_path = PathBuf::from(&sock);
-        if sock_path.exists() {
-            bind(&mut b, "--bind", &sock_path, &sock_path);
+    if args.allow_ssh {
+        eprintln!("claude-jail: WARNING: --allow-ssh forwards your SSH agent into the jail.");
+        eprintln!("claude-jail: Claude can sign arbitrary SSH operations with your keys.");
+        if args.dangerous {
+            eprintln!("claude-jail: WARNING: combining --allow-ssh with --dangerous is strongly discouraged.");
+        }
+        if let Ok(sock) = env::var("SSH_AUTH_SOCK") {
+            let sock_path = PathBuf::from(&sock);
+            if sock_path.exists() {
+                bind(&mut b, "--bind", &sock_path, &sock_path);
+            }
         }
     }
 
@@ -402,8 +415,10 @@ fn main() -> Result<()> {
         }
     }
 
-    if let Ok(v) = env::var("SSH_AUTH_SOCK") {
-        setenv(&mut b, "SSH_AUTH_SOCK", &v);
+    if args.allow_ssh {
+        if let Ok(v) = env::var("SSH_AUTH_SOCK") {
+            setenv(&mut b, "SSH_AUTH_SOCK", &v);
+        }
     }
 
     for var in [
