@@ -352,6 +352,7 @@ inside the jail.
 | `curl`, `bash`, `python3`, `direnv` | standard |
 | `coreutils`, `findutils`, `jq` | standard |
 | `grep` (GNU), `ripgrep`, `sed` (GNU) | standard |
+| `ssh`, `ssh-keyscan`, `scp` | openssh client; agent available only with `--allow-ssh` |
 | `ingest`, `mcp-server` | from this repo |
 
 ### GitHub access (gh proxy)

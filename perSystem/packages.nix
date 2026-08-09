@@ -188,6 +188,7 @@
         pkgs.gnugrep
         pkgs.ripgrep
         pkgs.gnused
+        pkgs.openssh
         ingestPkg
         mcpServerPkg
       ];
