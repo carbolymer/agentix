@@ -281,6 +281,143 @@ check that the services are running (`nix run .#dev`) and the binary path is cor
 
 ---
 
+## claude-jail
+
+`claude-jail` runs Claude Code inside a [bubblewrap](https://github.com/containers/bubblewrap)
+sandbox, giving it read-write access to your project while blocking access to the rest of your
+home directory, SSH keys, and host credentials.
+
+### Usage
+
+```bash
+nix run .#claude-jail [options]
+```
+
+Flags for `claude` itself go after `--`:
+
+```bash
+nix run .#claude-jail -- --dangerously-skip-permissions
+nix run .#claude-jail --dangerous   # shorthand for the above
+```
+
+### Flags
+
+| Flag | Description |
+|---|---|
+| `--dangerous` | Pass `--dangerously-skip-permissions` to Claude |
+| `--write` | Allow mutating GitHub operations via the gh proxy (releases, `api POST/PATCH/DELETE`) |
+| `--repo OWNER/REPO` | Add an extra GitHub repo the proxy may access. Repeatable. |
+| `--no-github-auth` | Skip the gh proxy; no `gh` available inside the jail |
+| `--ro PATH` | Bind an extra path read-only at its real path. Repeatable. |
+| `--rw PATH` | Bind an extra path read-write at its real path. Repeatable. |
+| `--debug` | Print every host command and the full bwrap argument list before launching |
+
+### What gets mounted
+
+Network access is shared with the host. Everything else is constructed from scratch:
+
+| Path inside jail | Source | Access |
+|---|---|---|
+| `/nix` | host | read-only |
+| `/proc`, `/dev`, `/tmp` | synthetic | — |
+| `~/bin` | `$CLAUDE_JAIL_BIN_DIR` | read-only |
+| `~/.claude` | host `~/.claude` | read-write |
+| `~/.claude.json` | host `~/.claude.json` | read-write |
+| `~/.ssh/known_hosts` | host | read-only |
+| `/tmp/gitconfig` | synthetic (host identity) | read-only |
+| project worktree | host worktree root | read-write |
+| bare git common dir | host `.bare/` or `.git/` | read-write |
+| gh proxy socket dir | host tmpdir | read-write |
+| `/etc/{ssl,nix,resolv.conf,…}` | host | read-only |
+
+**Git worktree detection.** The jail automatically mounts the full worktree root, not just the
+current subdirectory. For bare+worktree layouts (e.g. `git worktree add`), the common git dir is
+mounted separately so commits and refs work correctly. The `hooks/` directory is masked with a
+tmpfs so Claude cannot plant code that runs on the host.
+
+**Synthetic gitconfig.** A minimal gitconfig is generated from the host's `git config --global
+user.name/email`. It sets `gpgsign = false`, rewrites `git@github.com:` URLs to HTTPS, and
+registers `gh auth git-credential` as the credential helper. Your real gitconfig is not visible
+inside the jail.
+
+### Tool set
+
+| Tool | Notes |
+|---|---|
+| `claude` | Claude Code |
+| `nix`, `git` | standard |
+| `gh` | proxied — see below |
+| `curl`, `bash`, `python3`, `direnv` | standard |
+| `coreutils`, `findutils`, `jq` | standard |
+| `grep` (GNU), `ripgrep`, `sed` (GNU) | standard |
+| `ingest`, `mcp-server` | from this repo |
+
+### GitHub access (gh proxy)
+
+By default, `claude-jail` starts a `gh-jail-server` process on the host before entering the
+sandbox. A thin `gh-jail-client` binary, installed as `gh` inside the jail, forwards every `gh`
+invocation to the server over a Unix domain socket. The server runs the real `gh` with the host's
+existing authentication — **no token is ever passed into the jail**.
+
+**Policy enforced by the server:**
+
+| Operation | Read-only (default) | With `--write` |
+|---|---|---|
+| `gh issue`, `gh pr`, `gh run`, `gh workflow` | allowed | allowed |
+| `gh repo view / list / clone / sync` | allowed | allowed |
+| `gh repo create / delete / rename / …` | blocked | blocked |
+| `gh release view / list / download` | allowed | allowed |
+| `gh release create / upload / delete / edit` | blocked | allowed |
+| `gh api` — `GET` | allowed | allowed |
+| `gh api` — `POST / PATCH / DELETE` | blocked | allowed |
+| `gh auth`, `gh config`, `gh ssh-key`, `gh gpg-key`, `gh extension`, `gh alias` | blocked | blocked |
+
+**Repo restriction.** The cwd's GitHub remote is allowed automatically. Pass `--repo OWNER/REPO`
+(repeatable) to add more. Any `gh` call with an explicit `-R`/`--repo` flag or an
+`/api/repos/OWNER/REPO/…` path not in the allowed list is rejected by the server.
+
+If the server fails to start, `gh` is simply unavailable inside the jail (a warning is printed;
+the jail still launches). Pass `--no-github-auth` to skip the proxy entirely.
+
+### Security model
+
+| Concern | Mitigation |
+|---|---|
+| Host filesystem | tmpfs home; only explicit bind mounts visible |
+| SSH private keys | not mounted; only `known_hosts` and the agent socket are bound |
+| Git hooks | `hooks/` masked with tmpfs; Claude cannot plant host-side hooks |
+| Git identity | synthetic gitconfig; real `~/.gitconfig` not visible |
+| GitHub credentials | not injected; all `gh` calls go through the policy-checking proxy |
+| Nix daemon | socket forwarded so `nix build` / `nix develop` work inside the jail |
+
+### Troubleshooting
+
+**`gh: GH_PROXY_SOCKET not set`**
+The server didn't start (or `--no-github-auth` was passed). Check the startup output for a
+warning line from `claude-jail`.
+
+**`gh: cannot connect to proxy at …`**
+The server crashed after creating the socket. Run with `--debug` to see the full server command
+and reproduce the error outside the jail.
+
+**`gh-jail-server did not create socket within 5 s`**
+The server binary is missing or `CLAUDE_JAIL_GH_SERVER` is wrong. This env var is set
+automatically by the Nix wrapper; when running the raw binary, set it manually.
+
+**Commits fail with GPG errors**
+The synthetic gitconfig sets `gpgsign = false`. If a system-level gitconfig overrides it, check
+`GIT_CONFIG_SYSTEM` and ensure it isn't re-enabling signing.
+
+**Claude can't see files outside the project**
+Only the worktree root and explicitly bound paths are visible. Use `--ro /path` or `--rw /path`
+to expose additional directories.
+
+**direnv environment not applied**
+`claude-jail` runs `direnv export json` on the host before entering bwrap. If the `.envrc` isn't
+trusted, run `direnv allow` in the project directory first.
+
+---
+
 ## Using the index with Claude
 
 ### How Claude uses the tools automatically
