@@ -65,6 +65,9 @@
         pkgs.coreutils
         pkgs.findutils
         pkgs.jq
+        pkgs.gnugrep
+        pkgs.ripgrep
+        pkgs.gnused
         ingestPkg
         mcpServerPkg
       ];

@@ -146,13 +146,33 @@ fn main() -> Result<()> {
         }
     }
 
-    // Bind the current directory at its real path so $PWD, realpath("."),
-    // direnv trust hashes, and any tool keyed on the absolute path all match.
-    // --dir uses mkdir -p semantics in the sandbox namespace.
-    if let Some(parent) = cwd.parent() {
+    // Detect git worktree context so we can bind the full working tree and
+    // object store rather than just the CWD subdirectory.
+    let git_ctx = detect_git_worktree(&cwd);
+
+    // Bind the project working tree root RW (falls back to CWD if not in a repo)
+    let bind_root: &Path = git_ctx
+        .as_ref()
+        .map_or(cwd.as_path(), |(wt, _)| wt.as_path());
+    if let Some(parent) = bind_root.parent() {
         push(&mut b, &["--dir", &parent.to_string_lossy()]);
     }
-    bind(&mut b, "--bind", &cwd, &cwd);
+    bind(&mut b, "--bind", bind_root, bind_root);
+
+    // Git bare-repo mounts (ordered: common-dir bind → hooks mask)
+    if let Some((wt_root, common_dir)) = &git_ctx {
+        // Bind the common git dir (e.g. .bare) RW when it lives outside the worktree.
+        // For plain repos, common_dir == $WT/.git which is already covered above.
+        if !common_dir.starts_with(wt_root) {
+            if let Some(parent) = common_dir.parent() {
+                push(&mut b, &["--dir", &parent.to_string_lossy()]);
+            }
+            bind(&mut b, "--bind", common_dir, common_dir);
+        }
+        // Mask hooks so the agent cannot plant code that runs on the host.
+        let hooks = common_dir.join("hooks");
+        push(&mut b, &["--tmpfs", &hooks.to_string_lossy()]);
+    }
 
     // Extra read-only paths — bind at real path (mkdir -p parent first)
     for path in &args.ro_paths {
@@ -317,6 +337,34 @@ fn passthrough(b: &mut Vec<OsString>, key: &str) {
     if let Ok(val) = env::var(key) {
         setenv(b, key, &val);
     }
+}
+
+fn detect_git_worktree(cwd: &Path) -> Option<(PathBuf, PathBuf)> {
+    let wt_out = Command::new("git")
+        .args(["-C", &cwd.to_string_lossy(), "rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !wt_out.status.success() {
+        return None;
+    }
+    let wt_root = PathBuf::from(std::str::from_utf8(&wt_out.stdout).ok()?.trim());
+
+    let common_out = Command::new("git")
+        .args([
+            "-C",
+            &cwd.to_string_lossy(),
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ])
+        .output()
+        .ok()?;
+    if !common_out.status.success() {
+        return None;
+    }
+    let common_dir = PathBuf::from(std::str::from_utf8(&common_out.stdout).ok()?.trim());
+
+    Some((wt_root, common_dir))
 }
 
 fn capture_direnv_env(dir: &Path) -> Result<HashMap<String, String>> {
