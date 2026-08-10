@@ -29,6 +29,7 @@
         inputs'.llm-agents.packages.ck
         # Claude Code usage analytics
         inputs'.llm-agents.packages.ccusage
+        config.packages.ax-jail
       ];
 
       shellHook = ''
