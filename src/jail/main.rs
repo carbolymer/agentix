@@ -25,6 +25,11 @@ struct Args {
     #[arg(long = "dangerous")]
     dangerous: bool,
 
+    /// Mount the parent of .bare to expose all sibling worktrees. Use when the
+    /// session will spawn agents that work across multiple worktrees at once.
+    #[arg(long = "all-worktrees")]
+    all_worktrees: bool,
+
     /// Grant write (push/merge/release) access via the gh proxy.
     #[arg(long = "write")]
     write: bool,
@@ -299,16 +304,28 @@ fn main() -> Result<()> {
 
     let git_ctx = detect_git_worktree(&cwd);
 
-    let bind_root: &Path = git_ctx
-        .as_ref()
-        .map_or(cwd.as_path(), |(wt, _)| wt.as_path());
+    // With --all-worktrees, bind the parent of .bare to expose all sibling
+    // worktrees; otherwise bind only the current worktree root.
+    let all_wt_root: Option<PathBuf> = if args.all_worktrees {
+        git_ctx
+            .as_ref()
+            .and_then(|(_, common_dir)| common_dir.parent().map(PathBuf::from))
+    } else {
+        None
+    };
+    let bind_root: &Path = all_wt_root
+        .as_deref()
+        .or_else(|| git_ctx.as_ref().map(|(wt, _)| wt.as_path()))
+        .unwrap_or(cwd.as_path());
     if let Some(parent) = bind_root.parent() {
         push(&mut b, &["--dir", &parent.to_string_lossy()]);
     }
     bind(&mut b, "--bind", bind_root, bind_root);
 
     if let Some((wt_root, common_dir)) = &git_ctx {
-        if !common_dir.starts_with(wt_root) {
+        // With --all-worktrees the parent bind already covers common_dir; without
+        // it, bind common_dir separately when it lives outside the worktree root.
+        if !args.all_worktrees && !common_dir.starts_with(wt_root) {
             if let Some(parent) = common_dir.parent() {
                 push(&mut b, &["--dir", &parent.to_string_lossy()]);
             }

@@ -21,6 +21,11 @@ struct Args {
     #[arg(long = "rw", value_name = "PATH")]
     rw_paths: Vec<PathBuf>,
 
+    /// Mount the parent of .bare to expose all sibling worktrees. Use when the
+    /// session will spawn agents that work across multiple worktrees at once.
+    #[arg(long = "all-worktrees")]
+    all_worktrees: bool,
+
     /// Arguments passed directly to ax (e.g. "Fix the tests" or --model llama3)
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     ax_args: Vec<String>,
@@ -143,10 +148,19 @@ fn main() -> Result<()> {
     // object store rather than just the CWD subdirectory.
     let git_ctx = detect_git_worktree(&cwd);
 
-    // Bind the project working tree root RW (falls back to CWD if not in a repo)
-    let bind_root: &Path = git_ctx
-        .as_ref()
-        .map_or(cwd.as_path(), |(wt, _)| wt.as_path());
+    // With --all-worktrees, bind the parent of .bare to expose all sibling
+    // worktrees; otherwise bind only the current worktree root.
+    let all_wt_root: Option<PathBuf> = if args.all_worktrees {
+        git_ctx
+            .as_ref()
+            .and_then(|(_, common_dir)| common_dir.parent().map(PathBuf::from))
+    } else {
+        None
+    };
+    let bind_root: &Path = all_wt_root
+        .as_deref()
+        .or_else(|| git_ctx.as_ref().map(|(wt, _)| wt.as_path()))
+        .unwrap_or(cwd.as_path());
     if let Some(parent) = bind_root.parent() {
         push(&mut b, &["--dir", &parent.to_string_lossy()]);
     }
@@ -154,9 +168,9 @@ fn main() -> Result<()> {
 
     // Git bare-repo mounts (ordered: common-dir bind → hooks mask → config mask)
     if let Some((wt_root, common_dir)) = &git_ctx {
-        // Bind the common git dir (e.g. .bare) RW when it lives outside the worktree.
-        // For plain repos, common_dir == $WT/.git which is already covered above.
-        if !common_dir.starts_with(wt_root) {
+        // With --all-worktrees the parent bind already covers common_dir; without
+        // it, bind common_dir separately when it lives outside the worktree root.
+        if !args.all_worktrees && !common_dir.starts_with(wt_root) {
             if let Some(parent) = common_dir.parent() {
                 push(&mut b, &["--dir", &parent.to_string_lossy()]);
             }
