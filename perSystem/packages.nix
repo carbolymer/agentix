@@ -13,14 +13,25 @@
     stubMain = pkgs.writeText "stub-main.rs" "fn main() {}";
     stubLib = pkgs.writeText "stub-lib.rs" "";
 
-    # Minimal source for buildDepsOnly: only Cargo.toml + Cargo.lock + stubs.
-    # This keeps cargoArtifacts stable across source-only changes so that
-    # editing jail or ingest code doesn't force mcp-server's deps to rebuild.
+    # Minimal source for buildDepsOnly: Cargo manifests for all workspace members
+    # plus stubs at every [[bin]]/[lib] entry point so cargo can resolve and
+    # compile all dependencies without touching real source.
+    # This keeps cargoArtifacts stable across source-only changes.
     depsOnlySrc = let
       cargoFiles = lib.fileset.toSource {
         root = ./..;
         fileset = lib.fileset.unions (
-          [../Cargo.toml]
+          [
+            ../Cargo.toml
+            # Workspace member manifests — cargo must be able to read the full
+            # workspace even when building a single package.
+            ../agentix-api/Cargo.toml
+            ../agentix-router/Cargo.toml
+            ../agentix-daemon/Cargo.toml
+            ../agentix-harness/Cargo.toml
+            ../agentix-ax/Cargo.toml
+            ../agentix-infer/Cargo.toml
+          ]
           ++ lib.optional (lib.pathExists ../Cargo.lock) ../Cargo.lock
         );
       };
@@ -28,6 +39,7 @@
       pkgs.runCommand "crane-deps-src" {} ''
         cp -rT ${cargoFiles} $out
         chmod -R u+w $out
+        # Root crate stubs
         mkdir -p $out/src/jail $out/src/ax_jail $out/src/ingest $out/src/gh_proxy
         cp ${stubLib}  $out/src/lib.rs
         cp ${stubMain} $out/src/main.rs
@@ -36,14 +48,34 @@
         cp ${stubMain} $out/src/ingest/main.rs
         cp ${stubMain} $out/src/gh_proxy/client.rs
         cp ${stubMain} $out/src/gh_proxy/server.rs
+        # Workspace member stubs
+        mkdir -p $out/agentix-api/src
+        cp ${stubLib} $out/agentix-api/src/lib.rs
+        mkdir -p $out/agentix-router/src
+        cp ${stubLib} $out/agentix-router/src/lib.rs
+        mkdir -p $out/agentix-daemon/src
+        cp ${stubMain} $out/agentix-daemon/src/main.rs
+        mkdir -p $out/agentix-harness/src
+        cp ${stubLib} $out/agentix-harness/src/lib.rs
+        mkdir -p $out/agentix-ax/src
+        cp ${stubMain} $out/agentix-ax/src/main.rs
+        mkdir -p $out/agentix-infer/src
+        cp ${stubLib} $out/agentix-infer/src/lib.rs
       '';
 
+    # agentix-infer depends on llama-cpp-2 which drives a C++ build via cmake.
+    # All packages share these build tools so that a single cargoArtifacts
+    # covers the full workspace dependency graph.
     commonArgs = {
       src = depsOnlySrc;
       strictDeps = true;
-      nativeBuildInputs = [pkgs.pkg-config pkgs.autoPatchelfHook];
-      buildInputs = [pkgs.onnxruntime pkgs.openssl];
+      nativeBuildInputs = [pkgs.pkg-config pkgs.autoPatchelfHook pkgs.clang pkgs.cmake pkgs.ninja];
+      buildInputs = [pkgs.onnxruntime pkgs.openssl pkgs.libclang.lib pkgs.stdenv.cc.cc.lib];
       ORT_DYLIB_PATH = "${pkgs.onnxruntime}/lib/libonnxruntime.so";
+      LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
+      CMAKE_GENERATOR = "Ninja";
+      CMAKE_MAKE_PROGRAM = "${pkgs.ninja}/bin/ninja";
+      doCheck = false;
     };
 
     cargoArtifacts = craneLib.buildDepsOnly commonArgs;
@@ -52,7 +84,27 @@
     cudaPackages = pkgs.cudaPackages_12;
     libcublasStatic = pkgs.lib.getOutput "static" cudaPackages.libcublas;
 
-    # Source for agentix-* workspace crates (separate from mcp-server/ingest deps)
+    cudaArgs = {
+      nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
+        cudaPackages.cudatoolkit
+        cudaPackages.cuda_cudart
+      ];
+      buildInputs = commonArgs.buildInputs ++ [
+        cudaPackages.libcublas
+        libcublasStatic
+      ];
+      CMAKE_CUDA_COMPILER = "${cudaPackages.cudatoolkit}/bin/nvcc";
+      CUDA_HOME = "${cudaPackages.cudatoolkit}";
+      CUDA_PATH = "${cudaPackages.cudatoolkit}";
+      RUSTFLAGS = "-L ${cudaPackages.cudatoolkit}/lib -L ${cudaPackages.cudatoolkit}/lib/stubs -L ${cudaPackages.cuda_cudart}/lib -L ${libcublasStatic}/lib";
+    };
+
+    # Separate cargoArtifacts for the CUDA-enabled agentix-daemon build.
+    # Feature flags change how llama-cpp-sys-2 is compiled so CUDA and
+    # non-CUDA artifacts cannot be shared.
+    cudaCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cudaArgs);
+
+    # Full source tree for agentix-* workspace packages.
     agentixSrc = lib.fileset.toSource {
       root = ./..;
       fileset = lib.fileset.unions (
@@ -70,45 +122,18 @@
       );
     };
 
-    agentixCommonArgs = {
-      src = agentixSrc;
-      strictDeps = true;
-      nativeBuildInputs = [pkgs.pkg-config pkgs.autoPatchelfHook pkgs.clang pkgs.cmake pkgs.ninja];
-      buildInputs = [pkgs.onnxruntime pkgs.openssl pkgs.libclang.lib pkgs.stdenv.cc.cc.lib];
-      ORT_DYLIB_PATH = "${pkgs.onnxruntime}/lib/libonnxruntime.so";
-      LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
-      CMAKE_GENERATOR = "Ninja";
-      CMAKE_MAKE_PROGRAM = "${pkgs.ninja}/bin/ninja";
-      doCheck = false;
-    };
-
-    agentixCargoArtifacts = craneLib.buildDepsOnly agentixCommonArgs;
-
-    cudaArgs = {
-      nativeBuildInputs = agentixCommonArgs.nativeBuildInputs ++ [
-        cudaPackages.cudatoolkit
-        cudaPackages.cuda_cudart
-      ];
-      buildInputs = agentixCommonArgs.buildInputs ++ [
-        cudaPackages.libcublas
-        libcublasStatic
-      ];
-      CMAKE_CUDA_COMPILER = "${cudaPackages.cudatoolkit}/bin/nvcc";
-      CUDA_HOME = "${cudaPackages.cudatoolkit}";
-      CUDA_PATH = "${cudaPackages.cudatoolkit}";
-      RUSTFLAGS = "-L ${cudaPackages.cudatoolkit}/lib -L ${cudaPackages.cudatoolkit}/lib/stubs -L ${cudaPackages.cuda_cudart}/lib -L ${libcublasStatic}/lib";
-    };
-
-    agentixDaemonPkg = craneLib.buildPackage (agentixCommonArgs
+    agentixDaemonPkg = craneLib.buildPackage (commonArgs
       // cudaArgs
       // {
-        cargoArtifacts = agentixCargoArtifacts;
+        src = agentixSrc;
+        cargoArtifacts = cudaCargoArtifacts;
         cargoExtraArgs = "--package agentix-daemon --features cuda";
       });
 
-    axPkg = craneLib.buildPackage (agentixCommonArgs
+    axPkg = craneLib.buildPackage (commonArgs
       // {
-        cargoArtifacts = agentixCargoArtifacts;
+        src = agentixSrc;
+        inherit cargoArtifacts;
         cargoExtraArgs = "--package agentix-ax";
       });
 
@@ -123,7 +148,18 @@
         base = lib.fileset.toSource {
           root = ./..;
           fileset = lib.fileset.unions (
-            [../Cargo.toml keepFileset]
+            [
+              ../Cargo.toml
+              # Workspace member manifests must be present so cargo can
+              # resolve the full workspace even when building a single bin.
+              ../agentix-api/Cargo.toml
+              ../agentix-router/Cargo.toml
+              ../agentix-daemon/Cargo.toml
+              ../agentix-harness/Cargo.toml
+              ../agentix-ax/Cargo.toml
+              ../agentix-infer/Cargo.toml
+              keepFileset
+            ]
             ++ lib.optional (lib.pathExists ../Cargo.lock) ../Cargo.lock
           );
         };
@@ -131,6 +167,20 @@
         pkgs.runCommand "crane-bin-src" {} ''
           cp -rT ${base} $out
           chmod -R u+w $out
+          # Workspace member stubs (cargo needs entry points even for
+          # members not being compiled)
+          mkdir -p $out/agentix-api/src
+          cp ${stubLib} $out/agentix-api/src/lib.rs
+          mkdir -p $out/agentix-router/src
+          cp ${stubLib} $out/agentix-router/src/lib.rs
+          mkdir -p $out/agentix-daemon/src
+          cp ${stubMain} $out/agentix-daemon/src/main.rs
+          mkdir -p $out/agentix-harness/src
+          cp ${stubLib} $out/agentix-harness/src/lib.rs
+          mkdir -p $out/agentix-ax/src
+          cp ${stubMain} $out/agentix-ax/src/main.rs
+          mkdir -p $out/agentix-infer/src
+          cp ${stubLib} $out/agentix-infer/src/lib.rs
           ${lib.concatMapStringsSep "\n" (p: ''
             mkdir -p "$out/$(dirname "${p}")"
             cp ${stubMain} "$out/${p}"
