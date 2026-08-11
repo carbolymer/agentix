@@ -1,0 +1,9 @@
+[package]
+name = "agentix-router"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Backend-selection routing for the agentix gateway"
+
+[dependencies]
+agentix-api = { path = "../agentix-api" }

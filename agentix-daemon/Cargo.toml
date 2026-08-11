@@ -1,0 +1,28 @@
+[package]
+name = "agentix-daemon"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[[bin]]
+name = "agentix-daemon"
+path = "src/main.rs"
+
+[features]
+# Pass through to agentix-infer — build with `--features cuda` for GPU inference
+cuda = ["agentix-infer/cuda"]
+
+[dependencies]
+agentix-api = { path = "../agentix-api" }
+agentix-router = { path = "../agentix-router" }
+agentix-infer = { path = "../agentix-infer", features = ["llamacpp"] }
+axum = { version = "0.8", features = ["json"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+tokio-stream = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
