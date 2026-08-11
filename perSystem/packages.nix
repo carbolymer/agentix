@@ -85,17 +85,27 @@
     libcublasStatic = pkgs.lib.getOutput "static" cudaPackages.libcublas;
 
     cudaArgs = {
+      # cuda_nvcc provides the nvcc binary and a setup hook that adds CUDA
+      # component include paths to NVCC_PREPEND_FLAGS, making cuda_runtime.h
+      # findable in the Nix sandbox (cudatoolkit's nvcc wrapper does not do this).
+      # cuda_cudart is needed both for the cuda_runtime.h header at build time
+      # and for libcudart at link/runtime.
       nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
-        cudaPackages.cudatoolkit
+        cudaPackages.cuda_nvcc
         cudaPackages.cuda_cudart
       ];
       buildInputs = commonArgs.buildInputs ++ [
+        cudaPackages.cuda_cudart
         cudaPackages.libcublas
         libcublasStatic
       ];
-      CMAKE_CUDA_COMPILER = "${cudaPackages.cudatoolkit}/bin/nvcc";
+      CMAKE_CUDA_COMPILER = "${cudaPackages.cuda_nvcc}/bin/nvcc";
+      # sm_120 = RTX 5090 Laptop (Blackwell GB20x). Without this cmake
+      # tries to auto-detect via a JIT compilation that fails in the sandbox.
+      CMAKE_CUDA_ARCHITECTURES = "120";
       CUDA_HOME = "${cudaPackages.cudatoolkit}";
       CUDA_PATH = "${cudaPackages.cudatoolkit}";
+      CUDA_TOOLKIT_ROOT_DIR = "${cudaPackages.cudatoolkit}";
       RUSTFLAGS = "-L ${cudaPackages.cudatoolkit}/lib -L ${cudaPackages.cudatoolkit}/lib/stubs -L ${cudaPackages.cuda_cudart}/lib -L ${libcublasStatic}/lib";
     };
 
@@ -128,6 +138,9 @@
         src = agentixSrc;
         cargoArtifacts = cudaCargoArtifacts;
         cargoExtraArgs = "--package agentix-daemon --features cuda";
+        # libcuda.so.1 is the NVIDIA driver API — present on the host at
+        # runtime but never in the Nix store at build time.
+        autoPatchelfIgnoreMissingDeps = ["libcuda.so.1"];
       });
 
     axPkg = craneLib.buildPackage (commonArgs
@@ -420,7 +433,14 @@
 
     packages.ingest = ingestPkg;
 
-    packages.agentix-daemon = agentixDaemonPkg;
+    # Wrapper that sets LD_LIBRARY_PATH so libcuda.so.1 (NVIDIA driver API,
+    # not in the Nix store) is found at runtime. Also fixes the nix run binary
+    # name: crane names derivations after the root crate (mcp-server-0.1.0),
+    # so nix run .#agentix-daemon would try to exec 'mcp-server' without this.
+    packages.agentix-daemon = pkgs.writeShellScriptBin "agentix-daemon" ''
+      export LD_LIBRARY_PATH="/run/opengl-driver/lib:${cudaPackages.cuda_cudart}/lib:${cudaPackages.libcublas}/lib:''${LD_LIBRARY_PATH:-}"
+      exec ${agentixDaemonPkg}/bin/agentix-daemon "$@"
+    '';
 
     packages.ax = axPkg;
 
