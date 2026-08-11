@@ -67,7 +67,34 @@ impl InferBackend for LlamaCppBackend {
     ) -> Result<Arc<dyn LoadedModel>, InferError> {
         let path = blob_path.to_path_buf();
         let backend = Arc::clone(&self.backend);
-        let is_embedding = info.capabilities.contains(&Capability::Embedding);
+        // Prefer manifest capabilities; fall back to reading GGUF metadata
+        // directly for models pulled via Ollama (no _agentix manifest extension).
+        let (is_embedding, gguf_meta) = if info.capabilities.is_empty() {
+            match crate::meta::gguf::read_gguf_metadata(&path) {
+                Ok(m) => {
+                    let emb = m.capabilities.contains(&Capability::Embedding);
+                    (emb, Some(m))
+                }
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), err = %e, "GGUF metadata read failed; assuming completion-only");
+                    (false, None)
+                }
+            }
+        } else {
+            (info.capabilities.contains(&Capability::Embedding), None)
+        };
+
+        tracing::info!(
+            model = %info.name,
+            blob = %path.display(),
+            manifest_caps = ?info.capabilities,
+            gguf_arch = gguf_meta.as_ref().map(|m| m.architecture.as_str()).unwrap_or("(from manifest)"),
+            gguf_pooling = gguf_meta.as_ref().map(|m| format!("{:?}", m.capabilities)).unwrap_or_default(),
+            is_embedding,
+            n_gpu_layers = self.n_gpu_layers,
+            "loading model",
+        );
+
         let n_ctx_val = info.context_length.clamp(64, 4096).max(256);
         let size_bytes = info.size_bytes;
 

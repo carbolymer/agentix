@@ -92,12 +92,22 @@ async fn embeddings_handler(
     _headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
+    let model = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v["model"].as_str().map(str::to_string))
+        .unwrap_or_default();
+
+    tracing::info!(model = %model, "embeddings request");
+
     // Try the in-process InferEngine first
     let resp = infer_handler::embeddings(&state, body.clone()).await;
+
+    tracing::info!(model = %model, status = %resp.status(), "infer engine response");
 
     // If the model isn't in the local store, fall back to Ollama
     if resp.status() == StatusCode::NOT_FOUND {
         let url = format!("{}/v1/embeddings", state.config.ollama_base_url);
+        tracing::info!(model = %model, ollama_url = %url, "falling back to Ollama proxy");
         return match state
             .http
             .post(&url)

@@ -133,7 +133,7 @@ impl ModelStore {
     }
 
     pub fn info(&self, name: &str) -> Option<ModelInfo> {
-        let path = self.manifest_path_for(name);
+        let path = self.find_manifest(name)?;
         let m = manifest::read_manifest(&path).ok()?;
         Some(manifest::manifest_to_model_info(name.to_string(), &m))
     }
@@ -163,18 +163,61 @@ impl ModelStore {
 
     /// Resolve a model name to its primary GGUF/safetensors blob path.
     pub fn resolve(&self, name: &str) -> Option<PathBuf> {
-        let manifest_path = self.manifest_path_for(name);
+        let manifest_path = self.find_manifest(name)?;
         let manifest = manifest::read_manifest(&manifest_path).ok()?;
-        let layer = manifest
-            .layers
-            .iter()
-            .find(|l| l.media_type == "application/vnd.ollama.image.model")?;
+        let layer = manifest.layers.iter().find(|l| {
+            l.media_type == "application/vnd.ollama.image.model"
+                || l.media_type == "application/vnd.ollama.image.tensor"
+        })?;
         let hash = layer.digest.strip_prefix("sha256:")?;
         Some(blob::blob_path(&self.models_dir, hash))
     }
 
+    /// Find the manifest file for a model name, trying multiple layouts:
+    /// 1. Agentix: manifests/agentix/{name}/latest
+    /// 2. Ollama:  manifests/{name with ':' → '/'} (e.g. hf.co/org/model:tag → hf.co/org/model/tag)
+    /// 3. Ollama short: manifests/registry.ollama.ai/library/{name}/latest or /{tag}
+    fn find_manifest(&self, name: &str) -> Option<PathBuf> {
+        let base = self.models_dir.join("manifests");
+
+        let try_path = |p: PathBuf| -> Option<PathBuf> {
+            let exists = p.exists();
+            tracing::debug!(path = %p.display(), exists, "find_manifest probe");
+            if exists { Some(p) } else { None }
+        };
+
+        // 1. Agentix layout
+        if let Some(p) = try_path(base.join("agentix").join(name).join("latest")) {
+            return Some(p);
+        }
+
+        // 2. Ollama layout: colon separates tag from the path
+        //    "hf.co/jinaai/jina-code-embeddings-1.5b-GGUF:Q8_0"
+        //    → manifests/hf.co/jinaai/jina-code-embeddings-1.5b-GGUF/Q8_0
+        if let Some(p) = try_path(base.join(name.replacen(':', "/", 1))) {
+            return Some(p);
+        }
+
+        // 3. Short Ollama name without registry prefix (e.g. "deepseek-r1:7b")
+        //    → manifests/registry.ollama.ai/library/deepseek-r1/7b
+        if !name.contains('/') {
+            let (model, tag) = name.split_once(':').unwrap_or((name, "latest"));
+            if let Some(p) = try_path(
+                base.join("registry.ollama.ai")
+                    .join("library")
+                    .join(model)
+                    .join(tag),
+            ) {
+                return Some(p);
+            }
+        }
+
+        tracing::warn!(name, models_dir = %self.models_dir.display(), "find_manifest: no manifest found");
+        None
+    }
+
     fn manifest_path_for(&self, name: &str) -> PathBuf {
-        // Simple flat layout: manifests/agentix/<name>/latest
+        // Agentix write layout: manifests/agentix/<name>/latest
         self.models_dir
             .join("manifests")
             .join("agentix")

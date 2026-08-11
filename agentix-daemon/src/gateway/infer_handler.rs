@@ -30,6 +30,14 @@ pub async fn embeddings(state: &AppState, body: axum::body::Bytes) -> Response {
 
     let input_refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
 
+    let model_info = state.infer.info(&model);
+    tracing::info!(
+        model = %model,
+        found_in_store = model_info.is_some(),
+        capabilities = ?model_info.as_ref().map(|m| &m.capabilities),
+        "embed_batch dispatch"
+    );
+
     match state.infer.embed_batch(&model, &input_refs).await {
         Ok(embeddings) => {
             let data: Vec<serde_json::Value> = embeddings
