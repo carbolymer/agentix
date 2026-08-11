@@ -46,13 +46,9 @@ impl ModelStore {
             ModelFormat::Safetensors => BackendHint::Candle,
         };
 
-        // Use the filename stem as the canonical model name
-        let name = hf_ref
-            .filename
-            .rsplit_once('.')
-            .map(|(stem, _)| stem)
-            .unwrap_or(&hf_ref.filename)
-            .to_string();
+        // Use the original model ref as the canonical name so that
+        // store.info(model_ref) finds the manifest after a pull.
+        let name = model_ref.to_string();
 
         let manifest = build_manifest(&hash, size, format, backend, &detected, &name);
         let manifest_path = self.manifest_path_for(&name);
@@ -80,11 +76,8 @@ impl ModelStore {
             ModelFormat::Safetensors => BackendHint::Candle,
         };
 
-        let name = filename
-            .rsplit_once('.')
-            .map(|(stem, _)| stem)
-            .unwrap_or(filename)
-            .to_string();
+        // Use the original path string as the canonical name.
+        let name = path_str.to_string();
 
         let manifest = build_manifest(&hash, size, format, backend, &detected, &name);
         let manifest_path = self.manifest_path_for(&name);
@@ -173,47 +166,9 @@ impl ModelStore {
         Some(blob::blob_path(&self.models_dir, hash))
     }
 
-    /// Find the manifest file for a model name, trying multiple layouts:
-    /// 1. Agentix: manifests/agentix/{name}/latest
-    /// 2. Ollama:  manifests/{name with ':' → '/'} (e.g. hf.co/org/model:tag → hf.co/org/model/tag)
-    /// 3. Ollama short: manifests/registry.ollama.ai/library/{name}/latest or /{tag}
     fn find_manifest(&self, name: &str) -> Option<PathBuf> {
-        let base = self.models_dir.join("manifests");
-
-        let try_path = |p: PathBuf| -> Option<PathBuf> {
-            let exists = p.exists();
-            tracing::debug!(path = %p.display(), exists, "find_manifest probe");
-            if exists { Some(p) } else { None }
-        };
-
-        // 1. Agentix layout
-        if let Some(p) = try_path(base.join("agentix").join(name).join("latest")) {
-            return Some(p);
-        }
-
-        // 2. Ollama layout: colon separates tag from the path
-        //    "hf.co/jinaai/jina-code-embeddings-1.5b-GGUF:Q8_0"
-        //    → manifests/hf.co/jinaai/jina-code-embeddings-1.5b-GGUF/Q8_0
-        if let Some(p) = try_path(base.join(name.replacen(':', "/", 1))) {
-            return Some(p);
-        }
-
-        // 3. Short Ollama name without registry prefix (e.g. "deepseek-r1:7b")
-        //    → manifests/registry.ollama.ai/library/deepseek-r1/7b
-        if !name.contains('/') {
-            let (model, tag) = name.split_once(':').unwrap_or((name, "latest"));
-            if let Some(p) = try_path(
-                base.join("registry.ollama.ai")
-                    .join("library")
-                    .join(model)
-                    .join(tag),
-            ) {
-                return Some(p);
-            }
-        }
-
-        tracing::warn!(name, models_dir = %self.models_dir.display(), "find_manifest: no manifest found");
-        None
+        let p = self.manifest_path_for(name);
+        if p.exists() { Some(p) } else { None }
     }
 
     fn manifest_path_for(&self, name: &str) -> PathBuf {

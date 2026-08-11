@@ -1,5 +1,5 @@
 use crate::error::InferError;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Parsed reference to a HuggingFace model file.
 #[derive(Debug, Clone)]
@@ -31,18 +31,176 @@ pub fn parse_hf_ref(model_ref: &str) -> Result<HfRef, InferError> {
     )))
 }
 
+/// Fetch the sha256 of a HuggingFace file via HTTP HEAD.
+/// HF sets `x-linked-etag` (LFS files) or `etag` to the sha256 hex.
+fn hf_file_sha256(hf_ref: &HfRef) -> Result<String, InferError> {
+    let url = format!(
+        "https://huggingface.co/{}/resolve/{}/{}",
+        hf_ref.repo_id, hf_ref.revision, hf_ref.filename
+    );
+    let resp = ureq::head(&url)
+        .call()
+        .map_err(|e| InferError::DownloadFailed(format!("HF HEAD request failed: {e}")))?;
+    let etag = resp
+        .header("x-linked-etag")
+        .or_else(|| resp.header("etag"))
+        .ok_or_else(|| {
+            InferError::DownloadFailed("HF response missing x-linked-etag / etag".to_string())
+        })?
+        .trim_matches('"')
+        .to_string();
+    Ok(etag)
+}
+
+/// When an HfRef filename looks like an Ollama quantization tag (no `.gguf`
+/// extension), list the repo's files and find the single GGUF whose name
+/// contains that tag (case-insensitive). Errors if zero or multiple match.
+fn resolve_filename(hf_ref: &HfRef) -> Result<String, InferError> {
+    if hf_ref.filename.to_lowercase().ends_with(".gguf") {
+        return Ok(hf_ref.filename.clone());
+    }
+
+    use hf_hub::api::sync::ApiBuilder;
+    use hf_hub::{Repo, RepoType};
+
+    let api = ApiBuilder::new()
+        .with_progress(false)
+        .build()
+        .map_err(|e| InferError::DownloadFailed(e.to_string()))?;
+
+    let repo = api.repo(Repo::with_revision(
+        hf_ref.repo_id.clone(),
+        RepoType::Model,
+        hf_ref.revision.clone(),
+    ));
+
+    let info = repo
+        .info()
+        .map_err(|e| InferError::DownloadFailed(format!("HF repo info failed: {e}")))?;
+
+    let tag_lower = hf_ref.filename.to_lowercase();
+    let matches: Vec<_> = info
+        .siblings
+        .iter()
+        .filter(|s| {
+            let name = s.rfilename.to_lowercase();
+            name.ends_with(".gguf") && name.contains(&tag_lower)
+        })
+        .collect();
+
+    match matches.len() {
+        0 => Err(InferError::DownloadFailed(format!(
+            "no GGUF file matching '{}' found in {}/{}",
+            hf_ref.filename, hf_ref.repo_id, hf_ref.revision
+        ))),
+        1 => {
+            tracing::info!(
+                tag = %hf_ref.filename,
+                resolved = %matches[0].rfilename,
+                "resolved Ollama tag to HF filename"
+            );
+            Ok(matches[0].rfilename.clone())
+        }
+        n => Err(InferError::DownloadFailed(format!(
+            "{n} GGUF files match '{}' in {}; be more specific",
+            hf_ref.filename, hf_ref.repo_id
+        ))),
+    }
+}
+
+/// Candidate directories that may contain Ollama-format blobs
+/// (`sha256-{hex}` files).
+fn ollama_blob_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    // OLLAMA_MODELS env var takes precedence
+    if let Ok(p) = std::env::var("OLLAMA_MODELS") {
+        dirs.push(PathBuf::from(p).join("blobs"));
+    }
+    // Standard Ollama location
+    if let Some(home) = dirs::home_dir() {
+        dirs.push(home.join(".ollama").join("models").join("blobs"));
+    }
+    dirs
+}
+
+/// Try to find a blob by sha256 in any Ollama blobs directory.
+fn find_in_ollama(sha256: &str) -> Option<PathBuf> {
+    let filename = format!("sha256-{sha256}");
+    for dir in ollama_blob_dirs() {
+        let candidate = dir.join(&filename);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Link `src` into `dest`, trying hard-link first, then copy.
+fn link_or_copy(src: &Path, dest: &Path) -> Result<(), InferError> {
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::hard_link(src, dest)
+        .or_else(|_| std::fs::copy(src, dest).map(|_| ()))
+        .map_err(|e| InferError::Io(e))
+}
+
 /// Download a file from HuggingFace Hub and write it to the blob store.
 /// Returns (sha256_hash, size_bytes).
+///
+/// Priority:
+/// 1. Blob already in agentix store → return immediately (no I/O)
+/// 2. Blob found in an Ollama blobs dir → hard-link into agentix store
+/// 3. Download from HuggingFace Hub
 pub fn download_to_blob_store(
     hf_ref: &HfRef,
     models_dir: &Path,
 ) -> Result<(String, u64), InferError> {
+    // Resolve Ollama-style quantization tags (e.g. "Q8_0") to the actual
+    // GGUF filename in the HF repo before making any blob requests.
+    let resolved_filename = resolve_filename(hf_ref)?;
+    let hf_ref = HfRef {
+        filename: resolved_filename,
+        ..hf_ref.clone()
+    };
+    let hf_ref = &hf_ref;
+
+    // 1. Fetch sha256 without downloading the file body
+    let sha256 = hf_file_sha256(hf_ref)?;
+    tracing::debug!(sha256 = %sha256, repo = %hf_ref.repo_id, file = %hf_ref.filename, "resolved HF file sha256");
+
+    let dest = super::blob::blob_path(models_dir, &sha256);
+
+    // 2. Already in agentix store
+    if dest.exists() {
+        let size = dest.metadata()?.len();
+        tracing::info!(hash = %sha256, "blob already in agentix store, skipping download");
+        return Ok((sha256, size));
+    }
+
+    // 3. Reuse blob from Ollama store (avoids re-download)
+    if let Some(ollama_src) = find_in_ollama(&sha256) {
+        tracing::info!(
+            hash = %sha256,
+            src = %ollama_src.display(),
+            "hardlinking blob from Ollama store"
+        );
+        link_or_copy(&ollama_src, &dest)?;
+        let size = dest.metadata()?.len();
+        return Ok((sha256, size));
+    }
+
+    // 4. Download from HuggingFace Hub
+    tracing::info!(
+        repo = %hf_ref.repo_id,
+        filename = %hf_ref.filename,
+        "downloading from HuggingFace Hub"
+    );
+
     use hf_hub::api::sync::ApiBuilder;
     use hf_hub::{Repo, RepoType};
 
-    // Use a temp dir as hf-hub cache so we control where files land
     let cache_dir = tempfile::tempdir().map_err(InferError::Io)?;
-
     let api = ApiBuilder::new()
         .with_cache_dir(cache_dir.path().to_path_buf())
         .with_progress(false)
@@ -59,7 +217,6 @@ pub fn download_to_blob_store(
         .get(&hf_ref.filename)
         .map_err(|e| InferError::DownloadFailed(format!("HF download failed: {}", e)))?;
 
-    // Stream from cache into our blob store
     let file = std::fs::File::open(&cached_path)?;
     let (hash, size) = super::blob::write_blob(models_dir, file)?;
 
@@ -67,7 +224,7 @@ pub fn download_to_blob_store(
         repo = %hf_ref.repo_id,
         filename = %hf_ref.filename,
         hash = %hash,
-        size = %size,
+        size,
         "downloaded blob from HuggingFace"
     );
 

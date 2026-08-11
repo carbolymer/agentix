@@ -26,3 +26,4 @@ data/
 
 # Claude
 .claude/settings.local.json
+models/
