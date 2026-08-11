@@ -98,6 +98,17 @@ fn main() -> Result<()> {
     // ~/bin — pre-built tool symlinks
     bind(&mut b, "--ro-bind", &bin_dir, &home.join("bin"));
 
+    // Node.js uses posix_spawn('/bin/sh') to run hook commands.
+    // NixOS has no /bin; create /bin/sh → ~/bin/bash inside the sandbox.
+    push(
+        &mut b,
+        &[
+            "--symlink",
+            &format!("{}/bin/bash", home.display()),
+            "/bin/sh",
+        ],
+    );
+
     // ~/.gitconfig — read-only for git identity
     ro_bind_if_exists(
         &mut b,

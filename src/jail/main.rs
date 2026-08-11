@@ -252,6 +252,17 @@ fn main() -> Result<()> {
 
     bind(&mut b, "--ro-bind", &bin_dir, &home.join("bin"));
 
+    // Node.js (Claude Code) uses posix_spawn('/bin/sh') to run hook commands.
+    // NixOS has no /bin; create /bin/sh → ~/bin/bash inside the sandbox.
+    push(
+        &mut b,
+        &[
+            "--symlink",
+            &format!("{}/bin/bash", home.display()),
+            "/bin/sh",
+        ],
+    );
+
     let dot_claude = home.join(".claude");
     if !dot_claude.exists() {
         fs::create_dir_all(&dot_claude).context("creating ~/.claude")?;

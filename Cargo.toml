@@ -20,6 +20,10 @@ name = "claude-jail"
 path = "src/jail/main.rs"
 
 [[bin]]
+name = "ax-jail"
+path = "src/ax_jail/main.rs"
+
+[[bin]]
 name = "gh-jail-client"
 path = "src/gh_proxy/client.rs"
 

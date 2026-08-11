@@ -247,9 +247,9 @@ struct MarkdownChunk {
 fn classify_doc(rel_path: &str) -> Option<&'static str> {
     let p = format!("/{}", rel_path.replace('\\', "/"));
     // Order matters: more specific patterns first
-    if p.ends_with("/AGENTS.md") || p == "/AGENTS.md" {
-        Some("agent_instruction")
-    } else if p.ends_with("/CLAUDE.md") || p == "/CLAUDE.md" {
+    if p.ends_with("/AGENTS.md") || p == "/AGENTS.md"
+        || p.ends_with("/CLAUDE.md") || p == "/CLAUDE.md"
+    {
         Some("agent_instruction")
     } else if p.contains("/.agent/workflows/") && p.ends_with(".md") {
         Some("workflow")

@@ -387,7 +387,7 @@ fn make_chunks(source: &str, language: &str) -> Vec<Chunk> {
     }
 
     let total_lines = source.lines().count();
-    let max_covered = syms.iter().map(|s| s.end_line as usize).max().unwrap_or(0);
+    let max_covered = syms.iter().map(|s| s.end_line).max().unwrap_or(0);
 
     let mut chunks: Vec<Chunk> = syms
         .into_iter()

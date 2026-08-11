@@ -41,6 +41,7 @@ pub fn extract_symbols(source: &str, language: &str) -> Vec<Symbol> {
 fn make_parser(lang: tree_sitter::Language) -> Option<tree_sitter::Parser> {
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&lang).ok()?;
+    #[allow(deprecated)] // parse_with_options requires restructuring; timeout still needed
     parser.set_timeout_micros(5_000_000); // 5 s — bail on pathological inputs (e.g. long hex-escape strings)
     Some(parser)
 }
