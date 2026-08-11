@@ -12,6 +12,9 @@ path = "src/main.rs"
 # Pass through to agentix-infer — build with `--features cuda` for GPU inference
 cuda = ["agentix-infer/cuda"]
 
+[lints]
+workspace = true
+
 [dependencies]
 agentix-api = { path = "../agentix-api" }
 agentix-router = { path = "../agentix-router" }

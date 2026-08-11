@@ -1,3 +1,11 @@
+[workspace]
+members = ["agentix-api", "agentix-router", "agentix-daemon", "agentix-harness", "agentix-ax", "agentix-infer"]
+resolver = "2"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
 [package]
 name = "mcp-server"
 version = "0.1.0"

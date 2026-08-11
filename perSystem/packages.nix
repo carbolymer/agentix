@@ -48,6 +48,70 @@
 
     cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
+    # CUDA packages for agentix-daemon llama-cpp build
+    cudaPackages = pkgs.cudaPackages_12;
+    libcublasStatic = pkgs.lib.getOutput "static" cudaPackages.libcublas;
+
+    # Source for agentix-* workspace crates (separate from mcp-server/ingest deps)
+    agentixSrc = lib.fileset.toSource {
+      root = ./..;
+      fileset = lib.fileset.unions (
+        [
+          ../Cargo.toml
+          ../src
+          ../agentix-api
+          ../agentix-router
+          ../agentix-daemon
+          ../agentix-harness
+          ../agentix-ax
+          ../agentix-infer
+        ]
+        ++ lib.optional (lib.pathExists ../Cargo.lock) ../Cargo.lock
+      );
+    };
+
+    agentixCommonArgs = {
+      src = agentixSrc;
+      strictDeps = true;
+      nativeBuildInputs = [pkgs.pkg-config pkgs.autoPatchelfHook pkgs.clang pkgs.cmake pkgs.ninja];
+      buildInputs = [pkgs.onnxruntime pkgs.openssl pkgs.libclang.lib pkgs.stdenv.cc.cc.lib];
+      ORT_DYLIB_PATH = "${pkgs.onnxruntime}/lib/libonnxruntime.so";
+      LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
+      CMAKE_GENERATOR = "Ninja";
+      CMAKE_MAKE_PROGRAM = "${pkgs.ninja}/bin/ninja";
+      doCheck = false;
+    };
+
+    agentixCargoArtifacts = craneLib.buildDepsOnly agentixCommonArgs;
+
+    cudaArgs = {
+      nativeBuildInputs = agentixCommonArgs.nativeBuildInputs ++ [
+        cudaPackages.cudatoolkit
+        cudaPackages.cuda_cudart
+      ];
+      buildInputs = agentixCommonArgs.buildInputs ++ [
+        cudaPackages.libcublas
+        libcublasStatic
+      ];
+      CMAKE_CUDA_COMPILER = "${cudaPackages.cudatoolkit}/bin/nvcc";
+      CUDA_HOME = "${cudaPackages.cudatoolkit}";
+      CUDA_PATH = "${cudaPackages.cudatoolkit}";
+      RUSTFLAGS = "-L ${cudaPackages.cudatoolkit}/lib -L ${cudaPackages.cudatoolkit}/lib/stubs -L ${cudaPackages.cuda_cudart}/lib -L ${libcublasStatic}/lib";
+    };
+
+    agentixDaemonPkg = craneLib.buildPackage (agentixCommonArgs
+      // cudaArgs
+      // {
+        cargoArtifacts = agentixCargoArtifacts;
+        cargoExtraArgs = "--package agentix-daemon --features cuda";
+      });
+
+    axPkg = craneLib.buildPackage (agentixCommonArgs
+      // {
+        cargoArtifacts = agentixCargoArtifacts;
+        cargoExtraArgs = "--package agentix-ax";
+      });
+
     # Build a per-binary source tree: real files from keepFileset, plus
     # stubs at the listed paths so cargo finds all [[bin]]/[lib] entries.
     # binStubs get "fn main() {}", libStubs get an empty file.
@@ -270,6 +334,7 @@
         pkgs.gnused
         ingestPkg
         mcpServerPkg
+        axPkg
         axJailSanityCheck
       ];
     };
@@ -304,6 +369,10 @@
     packages.mcp-server = mcpServerPkg;
 
     packages.ingest = ingestPkg;
+
+    packages.agentix-daemon = agentixDaemonPkg;
+
+    packages.ax = axPkg;
 
     # Wrapper script sets env vars the Rust binary reads, then execs it.
     packages.claude-jail = pkgs.writeShellScriptBin "claude-jail" ''

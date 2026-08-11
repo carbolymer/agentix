@@ -5,5 +5,8 @@ edition = "2021"
 license = "Apache-2.0"
 description = "Backend-selection routing for the agentix gateway"
 
+[lints]
+workspace = true
+
 [dependencies]
 agentix-api = { path = "../agentix-api" }

@@ -8,6 +8,9 @@ description = "General-purpose async agent loop harness with tool-call budget en
 [lib]
 path = "src/lib.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

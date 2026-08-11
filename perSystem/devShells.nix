@@ -6,6 +6,17 @@
     ...
   }: let
     toolchain = inputs'.fenix.packages.stable.toolchain;
+    cudaPackages = pkgs.cudaPackages_12;
+    libcublasStatic = pkgs.lib.getOutput "static" cudaPackages.libcublas;
+    # nvcc uses system("/bin/sh -c ...") internally, which fails on NixOS (no /bin/sh).
+    # This wrapper runs cargo inside a bwrap namespace that provides /bin/sh → bash.
+    cargoWrapper = pkgs.writeShellScript "cargo" ''
+      exec ${pkgs.bubblewrap}/bin/bwrap \
+        --dev-bind / / \
+        --tmpfs /bin \
+        --symlink ${pkgs.bash}/bin/bash /bin/sh \
+        -- ${toolchain}/bin/cargo "$@"
+    '';
   in {
     devShells.default = pkgs.mkShell {
       packages = with pkgs; [
@@ -14,6 +25,11 @@
         pkg-config
         onnxruntime
         openssl
+        # C/C++ toolchain required by llama-cpp-sys-2 (cmake build + bindgen)
+        clang
+        cmake
+        ninja
+        libclang.lib
         # PostgreSQL client (matches server version)
         postgresql_17
         # Ollama
@@ -30,11 +46,33 @@
         # Claude Code usage analytics
         inputs'.llm-agents.packages.ccusage
         config.packages.ax-jail
+        # CUDA toolkit for building agentix-daemon with --features cuda
+        # cuda_cudart: libcudart_static.a is in the default output
+        # libcublas: libcublas_static.a is in a separate 'static' output
+        cudaPackages.cudatoolkit
+        cudaPackages.cuda_cudart
+        cudaPackages.libcublas
+        libcublasStatic
       ];
 
       shellHook = ''
         export ORT_DYLIB_PATH="${pkgs.onnxruntime}/lib/libonnxruntime.so"
-        export LD_LIBRARY_PATH="${pkgs.openssl.out}/lib:${pkgs.onnxruntime}/lib:$LD_LIBRARY_PATH"
+        export LIBCLANG_PATH="${pkgs.libclang.lib}/lib"
+        export CMAKE_GENERATOR="Ninja"
+        export CMAKE_MAKE_PROGRAM="${pkgs.ninja}/bin/ninja"
+        export LD_LIBRARY_PATH="${pkgs.openssl.out}/lib:${pkgs.onnxruntime}/lib:${pkgs.libclang.lib}/lib:${pkgs.stdenv.cc.cc.lib}/lib:${cudaPackages.cuda_cudart}/lib:${cudaPackages.libcublas}/lib:$LD_LIBRARY_PATH"
+        export CUDA_HOME="${cudaPackages.cudatoolkit}"
+        export CUDA_PATH="${cudaPackages.cudatoolkit}"
+        export CMAKE_CUDA_COMPILER="${cudaPackages.cudatoolkit}/bin/nvcc"
+        # Static CUDA lib search paths for llama-cpp-sys-2.
+        # cublas/cudart have a separate 'static' output in nixpkgs (not in the default 'lib' output).
+        # lib/stubs contains libcuda.so — the driver API stub needed at link time.
+        export RUSTFLAGS="''${RUSTFLAGS:+$RUSTFLAGS }-L ${cudaPackages.cudatoolkit}/lib -L ${cudaPackages.cudatoolkit}/lib/stubs -L ${cudaPackages.cuda_cudart}/lib -L ${libcublasStatic}/lib"
+        # nvcc uses system("/bin/sh -c ...") internally, but NixOS has no /bin/sh.
+        # Prepend a cargo wrapper that runs the build inside a bwrap namespace with /bin/sh.
+        _CARGO_WRAP_DIR=$(mktemp -d)
+        ln -s ${cargoWrapper} "$_CARGO_WRAP_DIR/cargo"
+        export PATH="$_CARGO_WRAP_DIR:$PATH"
         echo "Agentic RAG Stack"
         echo ""
         echo "Services:"

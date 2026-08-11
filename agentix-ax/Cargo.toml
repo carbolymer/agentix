@@ -9,6 +9,9 @@ description = "General-purpose code development agent CLI"
 name = "ax"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 agentix-harness = { path = "../agentix-harness" }
 tokio = { version = "1", features = ["full"] }
