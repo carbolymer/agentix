@@ -195,7 +195,7 @@ fn embed_batch_sync(
 ) -> Result<Vec<Vec<f32>>, InferError> {
     let mut results = Vec::with_capacity(inputs.len());
 
-    for (seq_id, input) in inputs.iter().enumerate() {
+    for input in inputs {
         let tokens = model
             .str_to_token(input, AddBos::Never)
             .map_err(|e| InferError::Backend(format!("tokenize error: {e:?}")))?;
@@ -205,6 +205,10 @@ fn embed_batch_sync(
             continue;
         }
 
+        // Clear KV cache before each sequence so prior decode passes don't
+        // bleed through. seq_id is always 0 — one sequence per decode call.
+        ctx.clear_kv_cache();
+
         let n = tokens.len();
         let mut batch = LlamaBatch::new(n, 1);
 
@@ -213,7 +217,7 @@ fn embed_batch_sync(
             // Decoder models: mark ALL tokens as output so llama.cpp can mean-pool them.
             let logit_output = !use_encoder_path || pos == n - 1;
             batch
-                .add(token, pos as i32, &[seq_id as i32], logit_output)
+                .add(token, pos as i32, &[0], logit_output)
                 .map_err(|e| InferError::Backend(format!("batch add error: {e:?}")))?;
         }
 
@@ -226,7 +230,7 @@ fn embed_batch_sync(
         }
 
         let emb = ctx
-            .embeddings_seq_ith(seq_id as i32)
+            .embeddings_seq_ith(0)
             .map_err(|e| InferError::Backend(format!("embeddings error: {e:?}")))?;
 
         results.push(emb.to_vec());
