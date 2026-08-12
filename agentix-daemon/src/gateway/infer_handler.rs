@@ -4,6 +4,46 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
+/// Handle POST /api/embed (Ollama format) by routing to the in-process InferEngine.
+/// Request:  {"model": "...", "input": [...]}
+/// Response: {"embeddings": [[...], ...]}
+pub async fn ollama_embed(state: &AppState, body: axum::body::Bytes) -> Response {
+    let req: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!("invalid request: {e}")).into_response()
+        }
+    };
+
+    let model = match req["model"].as_str() {
+        Some(m) => m.to_string(),
+        None => return (StatusCode::BAD_REQUEST, "missing 'model' field").into_response(),
+    };
+
+    let inputs: Vec<String> = match &req["input"] {
+        serde_json::Value::String(s) => vec![s.clone()],
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+        _ => return (StatusCode::BAD_REQUEST, "input must be string or array").into_response(),
+    };
+
+    let input_refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
+
+    match state.infer.embed_batch(&model, &input_refs).await {
+        Ok(embeddings) => axum::Json(serde_json::json!({ "embeddings": embeddings })).into_response(),
+        Err(agentix_infer::InferError::ModelNotFound(_)) => {
+            (StatusCode::NOT_FOUND, "model not in local store").into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("inference error: {e}"),
+        )
+            .into_response(),
+    }
+}
+
 /// Handle POST /v1/embeddings by routing to the in-process InferEngine.
 pub async fn embeddings(state: &AppState, body: axum::body::Bytes) -> Response {
     let req: serde_json::Value = match serde_json::from_slice(&body) {

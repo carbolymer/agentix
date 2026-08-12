@@ -46,6 +46,8 @@ pub fn router(model_router: Arc<ModelRouter>, infer: InferEngine, config: Config
         .route("/v1/embeddings", post(embeddings_handler))
         // Anthropic-native endpoint (for clients using the Anthropic SDK directly)
         .route("/v1/messages", post(messages_handler))
+        // Ollama-compatible embedding endpoint (used by ingest/mcp-server)
+        .route("/api/embed", post(ollama_embed_handler))
         // Ollama-compatible model management endpoints
         .route("/api/pull", post(ollama_manage::pull_handler))
         .route("/api/delete", delete(ollama_manage::delete_handler))
@@ -125,6 +127,29 @@ async fn embeddings_handler(
         };
     }
 
+    resp
+}
+
+async fn ollama_embed_handler(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> Response {
+    let resp = infer_handler::ollama_embed(&state, body.clone()).await;
+    if resp.status() == StatusCode::NOT_FOUND {
+        // Fall back to Ollama's /api/embed
+        let url = format!("{}/api/embed", state.config.ollama_base_url);
+        return match state
+            .http
+            .post(&url)
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .await
+        {
+            Ok(r) => openai_proxy::relay_response(r).await,
+            Err(e) => (StatusCode::BAD_GATEWAY, format!("embed proxy error: {e}")).into_response(),
+        };
+    }
     resp
 }
 
