@@ -5,11 +5,17 @@ use crate::{
 use std::{num::NonZeroU32, path::Path, sync::Arc};
 
 use llama_cpp_2::{
-    context::params::LlamaContextParams,
+    context::params::{LlamaContextParams, LlamaPoolingType},
     llama_backend::LlamaBackend,
     llama_batch::LlamaBatch,
     model::{params::LlamaModelParams, AddBos, LlamaModel},
 };
+
+// True encoder-only architectures. These support llama_encode() and use
+// CLS/last-token pooling. Everything else (qwen2, llama, mistral, …) is a
+// decoder model and must use llama_decode() with all-token output for
+// mean-pooling based embeddings.
+const ENCODER_ARCHS: &[&str] = &["bert", "nomic_bert", "roberta", "xlm_roberta"];
 
 // Message type for the inference thread
 enum InferMessage {
@@ -34,8 +40,12 @@ pub struct LlamaCppBackend {
 
 impl LlamaCppBackend {
     pub fn new() -> Result<Self, InferError> {
-        let backend = LlamaBackend::init()
+        let mut backend = LlamaBackend::init()
             .map_err(|e| InferError::Backend(format!("llama.cpp init failed: {:?}", e)))?;
+
+        // Redirect noisy llama.cpp C-library logs through Rust's tracing
+        // so they honour the configured log level instead of flooding stderr.
+        backend.void_logs();
 
         let n_gpu_layers = std::env::var("AGENTIX_GPU_LAYERS")
             .ok()
@@ -67,9 +77,11 @@ impl InferBackend for LlamaCppBackend {
     ) -> Result<Arc<dyn LoadedModel>, InferError> {
         let path = blob_path.to_path_buf();
         let backend = Arc::clone(&self.backend);
-        // Prefer manifest capabilities; fall back to reading GGUF metadata
-        // directly for models pulled via Ollama (no _agentix manifest extension).
-        let (is_embedding, gguf_meta) = if info.capabilities.is_empty() {
+
+        // When the manifest doesn't explicitly include Embedding, re-read GGUF
+        // to confirm — this catches stale manifests written before the name
+        // heuristic was added (e.g. jina models with no pooling_type key).
+        let (is_embedding, gguf_meta) = if !info.capabilities.contains(&Capability::Embedding) {
             match crate::meta::gguf::read_gguf_metadata(&path) {
                 Ok(m) => {
                     let emb = m.capabilities.contains(&Capability::Embedding);
@@ -81,16 +93,24 @@ impl InferBackend for LlamaCppBackend {
                 }
             }
         } else {
-            (info.capabilities.contains(&Capability::Embedding), None)
+            (true, None)
         };
+
+        // Prefer GGUF-derived architecture (fresh read) over manifest (may be stale).
+        let architecture = gguf_meta
+            .as_ref()
+            .map(|m| m.architecture.clone())
+            .unwrap_or_else(|| info.architecture.clone());
+
+        // Encoder-only models use llama_encode() + last-token output.
+        // Decoder models used as embedding models use llama_decode() + all-token output.
+        let use_encoder_path = ENCODER_ARCHS.contains(&architecture.as_str());
 
         tracing::info!(
             model = %info.name,
-            blob = %path.display(),
-            manifest_caps = ?info.capabilities,
-            gguf_arch = gguf_meta.as_ref().map(|m| m.architecture.as_str()).unwrap_or("(from manifest)"),
-            gguf_pooling = gguf_meta.as_ref().map(|m| format!("{:?}", m.capabilities)).unwrap_or_default(),
+            architecture = %architecture,
             is_embedding,
+            use_encoder_path,
             n_gpu_layers = self.n_gpu_layers,
             "loading model",
         );
@@ -126,9 +146,18 @@ impl InferBackend for LlamaCppBackend {
             .spawn(move || {
                 // n_ctx_val >= 256 due to clamping; NonZeroU32::MIN (1) is an unreachable fallback
                 let n_ctx = NonZeroU32::new(n_ctx_val).unwrap_or(NonZeroU32::MIN);
+                // Decoder-based embedding models need explicit mean pooling — the GGUF
+                // has no pooling_type key so llama.cpp defaults to Unspecified (no
+                // per-sequence pool), which makes embeddings_seq_ith return null.
+                let pooling_type = if is_embedding && !use_encoder_path {
+                    LlamaPoolingType::Mean
+                } else {
+                    LlamaPoolingType::Unspecified
+                };
                 let ctx_params = LlamaContextParams::default()
                     .with_n_ctx(Some(n_ctx))
-                    .with_embeddings(is_embedding);
+                    .with_embeddings(is_embedding)
+                    .with_pooling_type(pooling_type);
 
                 let mut ctx = match model.new_context(&backend, ctx_params) {
                     Ok(c) => c,
@@ -141,7 +170,8 @@ impl InferBackend for LlamaCppBackend {
                 for msg in rx {
                     match msg {
                         InferMessage::EmbedBatch { inputs, reply } => {
-                            let result = embed_batch_sync(&model, &mut ctx, &inputs);
+                            let result =
+                                embed_batch_sync(&model, &mut ctx, &inputs, use_encoder_path);
                             let _ = reply.send(result);
                         }
                     }
@@ -161,6 +191,7 @@ fn embed_batch_sync(
     model: &LlamaModel,
     ctx: &mut llama_cpp_2::context::LlamaContext<'_>,
     inputs: &[String],
+    use_encoder_path: bool,
 ) -> Result<Vec<Vec<f32>>, InferError> {
     let mut results = Vec::with_capacity(inputs.len());
 
@@ -178,14 +209,21 @@ fn embed_batch_sync(
         let mut batch = LlamaBatch::new(n, 1);
 
         for (pos, &token) in tokens.iter().enumerate() {
-            let is_last = pos == n - 1;
+            // Encoder models: only mark last token as output (encoder pooling handles it).
+            // Decoder models: mark ALL tokens as output so llama.cpp can mean-pool them.
+            let logit_output = !use_encoder_path || pos == n - 1;
             batch
-                .add(token, pos as i32, &[seq_id as i32], is_last)
+                .add(token, pos as i32, &[seq_id as i32], logit_output)
                 .map_err(|e| InferError::Backend(format!("batch add error: {e:?}")))?;
         }
 
-        ctx.encode(&mut batch)
-            .map_err(|e| InferError::Backend(format!("encode error: {e:?}")))?;
+        if use_encoder_path {
+            ctx.encode(&mut batch)
+                .map_err(|e| InferError::Backend(format!("encode error: {e:?}")))?;
+        } else {
+            ctx.decode(&mut batch)
+                .map_err(|e| InferError::Backend(format!("decode error: {e:?}")))?;
+        }
 
         let emb = ctx
             .embeddings_seq_ith(seq_id as i32)

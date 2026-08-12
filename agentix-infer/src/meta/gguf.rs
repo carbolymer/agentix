@@ -77,14 +77,35 @@ pub fn read_gguf_metadata(path: &Path) -> Result<GgufMeta, InferError> {
         }
     }
 
-    // Conservative fallback: if no capabilities detected, assume Completion
+    // Fallback: if no capabilities detected, use name/architecture heuristics
     if capabilities.is_empty() {
-        tracing::warn!(
-            path = %path.display(),
-            architecture = %architecture,
-            "no capability keys found in GGUF metadata; defaulting to Completion"
-        );
-        capabilities.push(Capability::Completion);
+        let name_idx = gguf.find_key("general.name");
+        let general_name = if name_idx >= 0 {
+            gguf.val_str(name_idx).unwrap_or("").to_lowercase()
+        } else {
+            String::new()
+        };
+
+        // Architectures that are always embedding-only (no generative output)
+        const EMBEDDING_ARCHS: &[&str] = &["bert", "nomic_bert", "roberta", "xlm_roberta"];
+        let arch_is_embedding = EMBEDDING_ARCHS.contains(&architecture.as_str());
+
+        if general_name.contains("embed") || arch_is_embedding {
+            tracing::info!(
+                path = %path.display(),
+                architecture = %architecture,
+                name = %general_name,
+                "no pooling_type/chat_template found; name heuristic identifies embedding model"
+            );
+            capabilities.push(Capability::Embedding);
+        } else {
+            tracing::warn!(
+                path = %path.display(),
+                architecture = %architecture,
+                "no capability keys found in GGUF metadata; defaulting to Completion"
+            );
+            capabilities.push(Capability::Completion);
+        }
     }
 
     Ok(GgufMeta {
@@ -110,16 +131,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_capabilities_fallback() {
-        // When no GGUF keys match, we should get Completion as fallback.
-        // The real GGUF parsing path is tested via integration tests with a fixture model.
+    fn empty_capabilities_fallback_completion() {
+        // When no GGUF keys match and name has no embed hint, fallback is Completion.
         let caps: Vec<Capability> = vec![];
-        let result = if caps.is_empty() {
+        let general_name = "mistral-7b-instruct";
+        let result = if caps.is_empty() && !general_name.contains("embed") {
             vec![Capability::Completion]
         } else {
             caps
         };
         assert_eq!(result, vec![Capability::Completion]);
+    }
+
+    #[test]
+    fn empty_capabilities_fallback_embedding_by_name() {
+        // When no GGUF keys match but name contains "embed", fallback is Embedding.
+        let caps: Vec<Capability> = vec![];
+        let general_name = "jinaai/test-qwen25-coder-jina-code-embeddings-1.5b";
+        let result: Vec<Capability> = if caps.is_empty() && general_name.contains("embed") {
+            vec![Capability::Embedding]
+        } else if caps.is_empty() {
+            vec![Capability::Completion]
+        } else {
+            caps
+        };
+        assert_eq!(result, vec![Capability::Embedding]);
     }
 
     #[test]

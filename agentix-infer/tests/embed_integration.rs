@@ -9,7 +9,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use agentix_infer::{backend::llamacpp::LlamaCppBackend, InferConfig, InferEngine};
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 #[tokio::test]
 async fn embed_with_local_model() {
@@ -22,11 +22,7 @@ async fn embed_with_local_model() {
     };
 
     let dir = tempfile::tempdir().expect("temp dir");
-    let config = InferConfig {
-        models_dir: dir.path().to_path_buf(),
-        vram_limit_bytes: None,
-        max_loaded_models: 1,
-    };
+    let config = InferConfig::new(dir.path().to_path_buf(), None, 1);
 
     let engine = InferEngine::new(config).await.expect("engine init");
 
