@@ -76,12 +76,10 @@ async fn chat_completions_handler(
         RouteTarget::Anthropic => anthropic::proxy_chat(&state, headers, body).await,
         RouteTarget::OpenAI => openai_proxy::proxy_chat(&state, headers, body).await,
         RouteTarget::OpenRouter => openai_proxy::proxy_openrouter(&state, headers, body).await,
-        // Local route: try InferEngine first, fall back to Ollama proxy
         RouteTarget::Local => {
-            if state.infer.info(&req.model).is_some() {
-                // Model is registered in InferEngine — Phase 5 will route here
-                // For now fall through to Ollama until T039 is implemented
-                ollama_proxy::proxy_chat(&state, body).await
+            // Resolve the requested model name to whatever the InferEngine stored it as.
+            if let Some(resolved) = resolve_local_model(&state, &req.model).await {
+                infer_handler::complete(&state, &req, &resolved).await
             } else {
                 ollama_proxy::proxy_chat(&state, body).await
             }
@@ -204,4 +202,37 @@ async fn models_handler(State(state): State<AppState>) -> impl IntoResponse {
     }
 
     axum::Json(serde_json::json!({ "object": "list", "data": models }))
+}
+
+/// Find a model in the InferEngine by the name a client might request.
+/// Tries exact match first, then fuzzy suffix/alias matching so that e.g.
+/// "deepseek-r1:7b" resolves to "registry.ollama.ai/library/deepseek-r1/7b".
+/// Returns the canonical store name, or None if the model isn't local.
+async fn resolve_local_model(state: &AppState, requested: &str) -> Option<String> {
+    // 1. Exact match
+    if state.infer.info(requested).is_some() {
+        return Some(requested.to_string());
+    }
+
+    // 2. Scan all loaded models for a suffix/alias match
+    let all = state.infer.list().await;
+
+    // Normalize the requested name: "deepseek-r1:7b" → "deepseek-r1/7b"
+    let normalized = requested.replace(':', "/");
+
+    for info in &all {
+        let stored = &info.name;
+        // Suffix match: stored ends with the normalized requested name
+        if stored.ends_with(&normalized) || stored.ends_with(requested) {
+            return Some(stored.clone());
+        }
+        // Also match the short name after the last slash
+        if let Some(short) = stored.rsplit('/').next() {
+            if short == requested || short == normalized {
+                return Some(stored.clone());
+            }
+        }
+    }
+
+    None
 }

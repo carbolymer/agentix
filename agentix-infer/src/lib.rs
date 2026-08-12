@@ -87,7 +87,6 @@ pub struct ModelInfo {
     pub size_bytes: u64,
 }
 
-#[non_exhaustive]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CompletionRequest {
     pub messages: Vec<CompletionMessage>,
@@ -97,7 +96,6 @@ pub struct CompletionRequest {
     pub stop: Vec<String>,
 }
 
-#[non_exhaustive]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CompletionMessage {
     pub role: String,

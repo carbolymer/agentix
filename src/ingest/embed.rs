@@ -42,7 +42,7 @@ pub async fn embed_batch(texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         let send_result = client()
             .post(&url)
             .json(&body)
-            .timeout(Duration::from_secs(120))
+            .timeout(Duration::from_secs(1800))
             .send()
             .await;
 

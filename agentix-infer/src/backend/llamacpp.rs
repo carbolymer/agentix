@@ -1,6 +1,7 @@
 use crate::{
     backend::{CompletionStream, InferBackend, LoadedModel},
-    Capability, CompletionRequest, InferError, ModelFormat, ModelInfo,
+    Capability, CompletionChunk, CompletionMessage, CompletionRequest, FinishReason, InferError,
+    ModelFormat, ModelInfo,
 };
 use std::{num::NonZeroU32, path::Path, sync::Arc};
 
@@ -9,6 +10,7 @@ use llama_cpp_2::{
     llama_backend::LlamaBackend,
     llama_batch::LlamaBatch,
     model::{params::LlamaModelParams, AddBos, LlamaModel},
+    sampling::LlamaSampler,
 };
 
 // True encoder-only architectures. These support llama_encode() and use
@@ -23,11 +25,16 @@ enum InferMessage {
         inputs: Vec<String>,
         reply: tokio::sync::oneshot::Sender<Result<Vec<Vec<f32>>, InferError>>,
     },
+    Complete {
+        req: CompletionRequest,
+        tx: tokio::sync::mpsc::UnboundedSender<Result<CompletionChunk, InferError>>,
+    },
 }
 
 pub struct LlamaCppLoadedModel {
     tx: std::sync::mpsc::SyncSender<InferMessage>,
     vram_est: u64,
+    is_embedding: bool,
 }
 
 pub struct LlamaCppBackend {
@@ -115,7 +122,9 @@ impl InferBackend for LlamaCppBackend {
             "loading model",
         );
 
-        let n_ctx_val = info.context_length.clamp(64, 4096).max(256);
+        // Completion models get a larger context window; embedding models cap at 4096.
+        let max_ctx = if is_embedding { 4096u32 } else { 8192u32 };
+        let n_ctx_val = info.context_length.clamp(64, max_ctx).max(256);
         let size_bytes = info.size_bytes;
 
         let n_gpu_layers = self.n_gpu_layers;
@@ -154,10 +163,19 @@ impl InferBackend for LlamaCppBackend {
                 } else {
                     LlamaPoolingType::Unspecified
                 };
+                let n_threads = std::thread::available_parallelism()
+                    .map(|n| n.get() as i32)
+                    .unwrap_or(4);
                 let ctx_params = LlamaContextParams::default()
                     .with_n_ctx(Some(n_ctx))
                     .with_embeddings(is_embedding)
-                    .with_pooling_type(pooling_type);
+                    .with_pooling_type(pooling_type)
+                    // Use all available CPU threads — prefill is memory-bandwidth limited
+                    // and llama.cpp defaults to 1 thread without this.
+                    .with_n_threads(n_threads)
+                    .with_n_threads_batch(n_threads)
+                    // Process full context in one pass (no sub-batch splitting).
+                    .with_n_batch(n_ctx_val);
 
                 let mut ctx = match model.new_context(&backend, ctx_params) {
                     Ok(c) => c,
@@ -174,6 +192,9 @@ impl InferBackend for LlamaCppBackend {
                                 embed_batch_sync(&model, &mut ctx, &inputs, use_encoder_path);
                             let _ = reply.send(result);
                         }
+                        InferMessage::Complete { req, tx } => {
+                            complete_sync(&model, &mut ctx, &req, &tx);
+                        }
                     }
                 }
                 tracing::debug!("inference thread exiting");
@@ -183,6 +204,7 @@ impl InferBackend for LlamaCppBackend {
         Ok(Arc::new(LlamaCppLoadedModel {
             tx,
             vram_est: size_bytes,
+            is_embedding,
         }))
     }
 }
@@ -239,6 +261,155 @@ fn embed_batch_sync(
     Ok(results)
 }
 
+fn complete_sync(
+    model: &LlamaModel,
+    ctx: &mut llama_cpp_2::context::LlamaContext<'_>,
+    req: &CompletionRequest,
+    tx: &tokio::sync::mpsc::UnboundedSender<Result<CompletionChunk, InferError>>,
+) {
+    // Apply the model's built-in chat template to convert structured messages to a prompt.
+    let prompt = match apply_chat_template(model, &req.messages) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = tx.send(Err(InferError::Backend(format!("chat template error: {e}"))));
+            return;
+        }
+    };
+
+    tracing::debug!(prompt_len = prompt.len(), "complete_sync: applying prompt");
+
+    let tokens = match model.str_to_token(&prompt, AddBos::Always) {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = tx.send(Err(InferError::Backend(format!("tokenize error: {e:?}"))));
+            return;
+        }
+    };
+
+    if tokens.is_empty() {
+        let _ = tx.send(Ok(CompletionChunk {
+            delta: String::new(),
+            finish_reason: Some(FinishReason::Stop),
+        }));
+        return;
+    }
+
+    ctx.clear_kv_cache();
+
+    // Prefill: add all prompt tokens in one batch, only last needs logits.
+    let n_prompt = tokens.len();
+    let mut batch = LlamaBatch::new(n_prompt, 1);
+    for (i, &tok) in tokens.iter().enumerate() {
+        let is_last = i == n_prompt - 1;
+        if let Err(e) = batch.add(tok, i as i32, &[0], is_last) {
+            let _ = tx.send(Err(InferError::Backend(format!("batch add error: {e:?}"))));
+            return;
+        }
+    }
+
+    if let Err(e) = ctx.decode(&mut batch) {
+        let _ = tx.send(Err(InferError::Backend(format!("prefill decode error: {e:?}"))));
+        return;
+    }
+
+    // Build sampler chain: top-k → top-p → temperature → dist (random sampling)
+    let temperature = req.temperature.unwrap_or(0.8);
+    let top_p = req.top_p.unwrap_or(0.95);
+    let mut sampler = LlamaSampler::chain_simple([
+        LlamaSampler::top_k(40),
+        LlamaSampler::top_p(top_p, 1),
+        LlamaSampler::temp(temperature),
+        LlamaSampler::dist(0xDEAD_BEEF),
+    ]);
+
+    let max_new = req.max_tokens.unwrap_or(1024);
+    let mut n_pos = n_prompt;
+
+    for i in 0..max_new {
+        // Sample the next token from the last decode position.
+        let new_token = sampler.sample(ctx, -1);
+        sampler.accept(new_token);
+
+        if model.is_eog_token(new_token) {
+            let _ = tx.send(Ok(CompletionChunk {
+                delta: String::new(),
+                finish_reason: Some(FinishReason::Stop),
+            }));
+            return;
+        }
+
+        // token_to_piece_bytes(token, max_size, special=false, lstrip=None)
+        let piece = match model.token_to_piece_bytes(new_token, 32, false, None) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(e) => {
+                let _ = tx.send(Err(InferError::Backend(format!("detokenize error: {e:?}"))));
+                return;
+            }
+        };
+
+        // Check stop strings
+        if req.stop.iter().any(|s| piece.contains(s.as_str())) {
+            let _ = tx.send(Ok(CompletionChunk {
+                delta: String::new(),
+                finish_reason: Some(FinishReason::Stop),
+            }));
+            return;
+        }
+
+        if tx
+            .send(Ok(CompletionChunk {
+                delta: piece,
+                finish_reason: None,
+            }))
+            .is_err()
+        {
+            // Client disconnected
+            return;
+        }
+
+        if i == max_new - 1 {
+            let _ = tx.send(Ok(CompletionChunk {
+                delta: String::new(),
+                finish_reason: Some(FinishReason::Length),
+            }));
+            return;
+        }
+
+        // Decode the generated token to extend the KV cache.
+        let mut next_batch = LlamaBatch::new(1, 1);
+        if let Err(e) = next_batch.add(new_token, n_pos as i32, &[0], true) {
+            let _ = tx.send(Err(InferError::Backend(format!("next batch add: {e:?}"))));
+            return;
+        }
+        if let Err(e) = ctx.decode(&mut next_batch) {
+            let _ = tx.send(Err(InferError::Backend(format!("next decode: {e:?}"))));
+            return;
+        }
+        n_pos += 1;
+    }
+}
+
+fn apply_chat_template(
+    model: &LlamaModel,
+    messages: &[CompletionMessage],
+) -> Result<String, String> {
+    use llama_cpp_2::model::LlamaChatMessage;
+
+    let tmpl = model
+        .chat_template(None)
+        .map_err(|e| format!("chat_template: {e:?}"))?;
+
+    let chat: Vec<LlamaChatMessage> = messages
+        .iter()
+        .map(|m| LlamaChatMessage::new(m.role.clone(), m.content.clone()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("LlamaChatMessage: {e:?}"))?;
+
+    model
+        .apply_chat_template(&tmpl, &chat, true)
+        .map_err(|e| format!("apply_chat_template: {e:?}"))
+}
+
 #[async_trait::async_trait]
 impl LoadedModel for LlamaCppLoadedModel {
     async fn embed(&self, input: &str) -> Result<Vec<f32>, InferError> {
@@ -249,6 +420,11 @@ impl LoadedModel for LlamaCppLoadedModel {
     }
 
     async fn embed_batch(&self, inputs: &[&str]) -> Result<Vec<Vec<f32>>, InferError> {
+        if !self.is_embedding {
+            return Err(InferError::Backend(
+                "model is completion-only; use complete() instead".to_string(),
+            ));
+        }
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(InferMessage::EmbedBatch {
@@ -261,11 +437,21 @@ impl LoadedModel for LlamaCppLoadedModel {
             .map_err(|_| InferError::Backend("reply channel dropped".to_string()))?
     }
 
-    async fn complete(&self, _req: CompletionRequest) -> Result<CompletionStream, InferError> {
-        // Phase 5 (T036): streaming completion via sampling loop. Not yet implemented.
-        Err(InferError::Backend(
-            "completion not yet implemented in LlamaCppBackend (Phase 5)".to_string(),
-        ))
+    async fn complete(&self, req: CompletionRequest) -> Result<CompletionStream, InferError> {
+        if self.is_embedding {
+            return Err(InferError::Backend(
+                "model is embedding-only; use embed() instead".to_string(),
+            ));
+        }
+
+        let (chunk_tx, chunk_rx) = tokio::sync::mpsc::unbounded_channel();
+        self.tx
+            .send(InferMessage::Complete { req, tx: chunk_tx })
+            .map_err(|_| InferError::Backend("inference thread closed".to_string()))?;
+
+        let stream =
+            tokio_stream::wrappers::UnboundedReceiverStream::new(chunk_rx);
+        Ok(Box::pin(stream))
     }
 
     async fn tokenize(&self, _text: &str) -> Result<Vec<i32>, InferError> {
