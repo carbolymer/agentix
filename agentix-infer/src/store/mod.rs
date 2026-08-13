@@ -18,18 +18,15 @@ impl ModelStore {
 
     /// Pull a model from a remote source.
     /// Supported refs:
-    /// - "hf.co/org/repo:filename.gguf" — HuggingFace Hub GGUF
+    /// - "hf.co/org/repo:filename.gguf" — HuggingFace Hub GGUF (with prefix)
+    /// - "org/repo:filename.gguf" — HuggingFace Hub GGUF (without prefix)
+    /// - "org/repo:Q4_K_M" — fuzzy tag: lists repo, picks matching GGUF
     /// - "/local/path/to/model.gguf" — local file path
     pub fn pull(&self, model_ref: &str) -> Result<ModelInfo, InferError> {
-        if model_ref.starts_with("hf.co/") {
-            self.pull_hf(model_ref)
-        } else if model_ref.starts_with('/') || model_ref.starts_with("./") {
+        if model_ref.starts_with('/') || model_ref.starts_with("./") {
             self.register_local(model_ref)
         } else {
-            Err(InferError::DownloadFailed(format!(
-                "unsupported model ref format: '{}'. Use hf.co/org/repo:file or /path/to/file",
-                model_ref
-            )))
+            self.pull_hf(model_ref)
         }
     }
 

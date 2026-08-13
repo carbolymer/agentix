@@ -78,10 +78,18 @@ async fn chat_completions_handler(
         RouteTarget::OpenRouter => openai_proxy::proxy_openrouter(&state, headers, body).await,
         RouteTarget::Local => {
             // Resolve the requested model name to whatever the InferEngine stored it as.
-            if let Some(resolved) = resolve_local_model(&state, &req.model).await {
-                infer_handler::complete(&state, &req, &resolved).await
-            } else {
-                ollama_proxy::proxy_chat(&state, body).await
+            // No Ollama fallback — all local completions go through InferEngine.
+            // Pull models into InferEngine with POST /api/pull first.
+            match resolve_local_model(&state, &req.model).await {
+                Some(resolved) => infer_handler::complete(&state, &req, &resolved).await,
+                None => (
+                    StatusCode::NOT_FOUND,
+                    format!(
+                        "model '{}' not found in InferEngine — pull it first with POST /api/pull",
+                        req.model
+                    ),
+                )
+                    .into_response(),
             }
         }
     }
