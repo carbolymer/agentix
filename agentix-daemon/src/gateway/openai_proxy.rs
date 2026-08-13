@@ -3,7 +3,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use reqwest::header::HeaderMap as ReqwestHeaders;
+use reqwest::header::{HeaderMap as ReqwestHeaders, HeaderValue};
 
 pub async fn proxy_chat(
     state: &AppState,
@@ -62,8 +62,10 @@ async fn proxy_to(
     let url = format!("{base}/v1/chat/completions");
 
     let mut req_headers = ReqwestHeaders::new();
-    req_headers.insert("content-type", "application/json".parse().unwrap());
-    req_headers.insert("authorization", format!("Bearer {key}").parse().unwrap());
+    req_headers.insert("content-type", HeaderValue::from_static("application/json"));
+    if let Ok(v) = HeaderValue::from_str(&format!("Bearer {key}")) {
+        req_headers.insert("authorization", v);
+    }
 
     for (name, value) in &headers {
         let n = name.as_str().to_lowercase();

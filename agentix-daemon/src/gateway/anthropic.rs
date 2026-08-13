@@ -3,7 +3,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use reqwest::header::HeaderMap as ReqwestHeaders;
+use reqwest::header::{HeaderMap as ReqwestHeaders, HeaderValue};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -184,12 +184,17 @@ fn build_anthropic_headers(
     incoming: &axum::http::HeaderMap,
 ) -> ReqwestHeaders {
     let mut h = ReqwestHeaders::new();
-    h.insert("content-type", "application/json".parse().unwrap());
-    h.insert("anthropic-version", ANTHROPIC_VERSION.parse().unwrap());
+    h.insert("content-type", HeaderValue::from_static("application/json"));
+    h.insert(
+        "anthropic-version",
+        HeaderValue::from_static(ANTHROPIC_VERSION),
+    );
 
     match api_key {
         Some(key) => {
-            h.insert("x-api-key", key.parse().unwrap());
+            if let Ok(v) = HeaderValue::from_str(key) {
+                h.insert("x-api-key", v);
+            }
         }
         None => {
             // Pass through the client's Authorization header for enterprise session tokens.

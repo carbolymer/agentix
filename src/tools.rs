@@ -536,7 +536,7 @@ impl CodeSearchServer {
 
         let msg = if pre_existing > 0 && ingest_project.is_some() {
             // Package existed under a different scope — project array was extended.
-            let proj = ingest_project.unwrap();
+            let proj = ingest_project.unwrap_or_default();
             format!(
                 "Added {pkg_ver} to project '{proj}': {chunks} chunks now visible.\n\
                  Use search_code with language={language} to query it.{gpu_warn}"
@@ -599,8 +599,7 @@ impl CodeSearchServer {
         // Sanitise repo_path (colons → underscores) so it's a valid directory name.
         let safe_repo = repo_path
             .replace("::", "__")
-            .replace(':', "_")
-            .replace('/', "_");
+            .replace([':', '/'], "_");
         let out_path = std::path::PathBuf::from("/tmp/agentic-nix")
             .join(&safe_repo)
             .join(&file_path);

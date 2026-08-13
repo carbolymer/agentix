@@ -29,6 +29,10 @@ enum InferMessage {
         req: CompletionRequest,
         tx: tokio::sync::mpsc::UnboundedSender<Result<CompletionChunk, InferError>>,
     },
+    Tokenize {
+        text: String,
+        reply: tokio::sync::oneshot::Sender<Result<Vec<i32>, InferError>>,
+    },
 }
 
 pub struct LlamaCppLoadedModel {
@@ -209,6 +213,15 @@ impl InferBackend for LlamaCppBackend {
                         }
                         InferMessage::Complete { req, tx } => {
                             complete_sync(&model, &mut ctx, &req, &tx);
+                        }
+                        InferMessage::Tokenize { text, reply } => {
+                            let result = model
+                                .str_to_token(&text, AddBos::Never)
+                                .map(|tokens| tokens.into_iter().map(|t| t.0).collect())
+                                .map_err(|e| {
+                                    InferError::Backend(format!("tokenize error: {e:?}"))
+                                });
+                            let _ = reply.send(result);
                         }
                     }
                 }
@@ -447,8 +460,9 @@ impl LoadedModel for LlamaCppLoadedModel {
 
     async fn embed_batch(&self, inputs: &[&str]) -> Result<Vec<Vec<f32>>, InferError> {
         if !self.is_embedding {
-            return Err(InferError::Backend(
-                "model is completion-only; use complete() instead".to_string(),
+            return Err(InferError::CapabilityMissing(
+                String::new(),
+                crate::Capability::Embedding,
             ));
         }
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -465,8 +479,9 @@ impl LoadedModel for LlamaCppLoadedModel {
 
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionStream, InferError> {
         if self.is_embedding {
-            return Err(InferError::Backend(
-                "model is embedding-only; use embed() instead".to_string(),
+            return Err(InferError::CapabilityMissing(
+                String::new(),
+                crate::Capability::Completion,
             ));
         }
 
@@ -480,10 +495,17 @@ impl LoadedModel for LlamaCppLoadedModel {
         Ok(Box::pin(stream))
     }
 
-    async fn tokenize(&self, _text: &str) -> Result<Vec<i32>, InferError> {
-        Err(InferError::Backend(
-            "tokenize not yet implemented".to_string(),
-        ))
+    async fn tokenize(&self, text: &str) -> Result<Vec<i32>, InferError> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(InferMessage::Tokenize {
+                text: text.to_string(),
+                reply: reply_tx,
+            })
+            .map_err(|_| InferError::Backend("inference thread closed".to_string()))?;
+        reply_rx
+            .await
+            .map_err(|_| InferError::Backend("reply channel dropped".to_string()))?
     }
 
     fn vram_bytes(&self) -> u64 {

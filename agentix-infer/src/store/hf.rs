@@ -142,7 +142,7 @@ fn link_or_copy(src: &Path, dest: &Path) -> Result<(), InferError> {
     }
     std::fs::hard_link(src, dest)
         .or_else(|_| std::fs::copy(src, dest).map(|_| ()))
-        .map_err(|e| InferError::Io(e))
+        .map_err(InferError::Io)
 }
 
 /// Download a file from HuggingFace Hub and write it to the blob store.

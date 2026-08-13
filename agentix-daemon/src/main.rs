@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
     }
 
     let model_router = Arc::new(agentix_router::Router::new());
-    let router = gateway::router(model_router, infer, cfg.clone());
+    let router = gateway::router(model_router, infer, cfg.clone())?;
 
     let addr = format!("0.0.0.0:{}", cfg.gateway_port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;

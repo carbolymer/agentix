@@ -299,8 +299,8 @@ async fn list_repos(pool: &sqlx::PgPool, local: bool, source_kind: Option<&str>)
     }
 
     println!(
-        "{:<55} {:<10} {:<20} {}",
-        "repo_path", "kind", "package", "version"
+        "{:<55} {:<10} {:<20} version",
+        "repo_path", "kind", "package"
     );
     println!("{}", "-".repeat(100));
     for (repo_path, kind, package_name, version) in &rows {

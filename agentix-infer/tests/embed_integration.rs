@@ -22,7 +22,7 @@ async fn embed_with_local_model() {
     };
 
     let dir = tempfile::tempdir().expect("temp dir");
-    let config = InferConfig::new(dir.path().to_path_buf(), None, 1);
+    let config = InferConfig::new(dir.path().to_path_buf(), None, 1, 512);
 
     let engine = InferEngine::new(config).await.expect("engine init");
 

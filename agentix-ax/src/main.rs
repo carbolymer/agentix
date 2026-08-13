@@ -113,7 +113,11 @@ async fn main() -> Result<()> {
             )
             .init();
 
-        let task_raw = cli.task.unwrap();
+        // Safety: is_tui = cli.task.is_none(), so we are in the else branch
+        // where cli.task is guaranteed Some.
+        let task_raw = cli.task.ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "task argument required in headless mode")
+        })?;
         let task = if task_raw == "-" {
             use tokio::io::AsyncReadExt;
             let mut buf = String::new();

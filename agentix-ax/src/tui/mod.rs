@@ -170,7 +170,7 @@ async fn event_loop(
 
         // Advance spinner every other tick (every ~100 ms).
         tick = tick.wrapping_add(1);
-        if tick % 2 == 0 {
+        if tick.is_multiple_of(2) {
             app.spinner_frame = (app.spinner_frame + 1) % ui::SPINNER.len();
         }
 

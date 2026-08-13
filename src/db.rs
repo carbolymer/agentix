@@ -35,6 +35,7 @@ fn vec_literal(query_vec: &[f32]) -> String {
 
 /// Hybrid BM25 + vector search over code_chunks with optional language / symbol_kind filters.
 /// When filters are set, fetches 3× candidates then trims to `limit`.
+#[allow(clippy::too_many_arguments)]
 pub async fn hybrid_search(
     pool: &PgPool,
     query_text: &str,

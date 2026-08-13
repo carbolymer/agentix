@@ -2,7 +2,6 @@ mod anthropic;
 mod health;
 mod infer_handler;
 mod ollama_manage;
-mod ollama_proxy;
 mod openai_proxy;
 
 use crate::config::Config;
@@ -17,6 +16,7 @@ use axum::{
 };
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
+use anyhow::Context as _;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -26,11 +26,15 @@ pub struct AppState {
     pub http: reqwest::Client,
 }
 
-pub fn router(model_router: Arc<ModelRouter>, infer: InferEngine, config: Config) -> Router {
+pub fn router(
+    model_router: Arc<ModelRouter>,
+    infer: InferEngine,
+    config: Config,
+) -> anyhow::Result<Router> {
     let http = reqwest::Client::builder()
         .user_agent("agentix-daemon/0.1")
         .build()
-        .expect("failed to build http client");
+        .context("failed to build HTTP client")?;
 
     let state = AppState {
         model_router,
@@ -39,7 +43,7 @@ pub fn router(model_router: Arc<ModelRouter>, infer: InferEngine, config: Config
         http,
     };
 
-    Router::new()
+    Ok(Router::new()
         .route("/health", get(health::handler))
         .route("/v1/models", get(models_handler))
         .route("/v1/chat/completions", post(chat_completions_handler))
@@ -54,7 +58,7 @@ pub fn router(model_router: Arc<ModelRouter>, infer: InferEngine, config: Config
         .route("/api/tags", get(ollama_manage::tags_handler))
         .route("/api/show", post(ollama_manage::show_handler))
         .layer(TraceLayer::new_for_http())
-        .with_state(state)
+        .with_state(state))
 }
 
 async fn chat_completions_handler(

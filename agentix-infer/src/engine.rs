@@ -80,6 +80,7 @@ impl InferEngine {
     // ── Inference ────────────────────────────────────────────────────────────
 
     pub async fn embed(&self, model: &str, input: &str) -> Result<Vec<f32>, InferError> {
+        self.check_capability(model, crate::Capability::Embedding)?;
         let guard = self.acquire(model).await?;
         guard.embed(input).await
     }
@@ -89,6 +90,7 @@ impl InferEngine {
         model: &str,
         inputs: &[&str],
     ) -> Result<Vec<Vec<f32>>, InferError> {
+        self.check_capability(model, crate::Capability::Embedding)?;
         let guard = self.acquire(model).await?;
         guard.embed_batch(inputs).await
     }
@@ -98,8 +100,14 @@ impl InferEngine {
         model: &str,
         req: CompletionRequest,
     ) -> Result<CompletionStream, InferError> {
+        self.check_capability(model, crate::Capability::Completion)?;
         let guard = self.acquire(model).await?;
         guard.complete(req).await
+    }
+
+    pub async fn tokenize(&self, model: &str, text: &str) -> Result<Vec<i32>, InferError> {
+        let guard = self.acquire(model).await?;
+        guard.tokenize(text).await
     }
 
     // ── Internal ─────────────────────────────────────────────────────────────
@@ -108,11 +116,52 @@ impl InferEngine {
         ModelStore::new(self.inner.config.models_dir.clone())
     }
 
+    /// Return `CapabilityMissing` if the model's manifest does not include `cap`.
+    /// Returns `Ok(())` if the model is unknown (load will fail later with ModelNotFound).
+    fn check_capability(
+        &self,
+        model: &str,
+        cap: crate::Capability,
+    ) -> Result<(), InferError> {
+        if let Some(info) = self.store().info(model) {
+            if !info.capabilities.contains(&cap) {
+                return Err(InferError::CapabilityMissing(model.to_string(), cap));
+            }
+        }
+        Ok(())
+    }
+
     async fn acquire(&self, model: &str) -> Result<crate::pool::ModelGuard, InferError> {
+        // Fast path: model already warm in the pool.
         if let Some(guard) = self.inner.pool.acquire_idle(model) {
             return Ok(guard);
         }
 
+        // Serialise concurrent loads for the same model key (T027).
+        // If another task is already loading this model, wait for it to finish
+        // and then retry the idle pool — the loader will have placed the model
+        // there before calling finish_loading.
+        if self.inner.pool.wait_if_loading(model).await {
+            // Another load just finished; try the idle pool again.
+            if let Some(guard) = self.inner.pool.acquire_idle(model) {
+                return Ok(guard);
+            }
+            // Unlikely but possible: the loaded model was immediately evicted.
+            // Fall through to attempt our own load below.
+        }
+
+        // Register ourselves as the loader for this key.
+        let notify = self.inner.pool.begin_loading(model);
+
+        let result = self.load_model(model).await;
+
+        // Always clear the loading sentinel, even on error.
+        self.inner.pool.finish_loading(model, notify);
+
+        result
+    }
+
+    async fn load_model(&self, model: &str) -> Result<crate::pool::ModelGuard, InferError> {
         let store = self.store();
         let info = store
             .info(model)

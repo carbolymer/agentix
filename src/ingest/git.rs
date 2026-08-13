@@ -28,6 +28,7 @@ async fn run_git(args: &[&str], cwd: Option<&Path>) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn ingest_git(
     pool: &PgPool,
     url: &str,

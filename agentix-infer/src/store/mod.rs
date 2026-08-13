@@ -5,6 +5,7 @@ pub mod manifest;
 use crate::meta;
 use crate::{error::InferError, BackendHint, ModelFormat, ModelInfo};
 use manifest::{AgentixExtension, Manifest, ManifestLayer};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub struct ModelStore {
@@ -169,7 +170,52 @@ impl ModelStore {
 
     fn find_manifest(&self, name: &str) -> Option<PathBuf> {
         let p = self.manifest_path_for(name);
-        if p.exists() { Some(p) } else { None }
+        if p.exists() {
+            return Some(p);
+        }
+        // Alias lookup: check _aliases.json for an alternate canonical name.
+        let canonical = self.read_aliases().remove(name)?;
+        let p2 = self.manifest_path_for(&canonical);
+        if p2.exists() { Some(p2) } else { None }
+    }
+
+    fn aliases_path(&self) -> PathBuf {
+        self.models_dir.join("manifests").join("_aliases.json")
+    }
+
+    fn read_aliases(&self) -> HashMap<String, String> {
+        let path = self.aliases_path();
+        let data = match std::fs::read(&path) {
+            Ok(d) => d,
+            Err(_) => return HashMap::new(),
+        };
+        serde_json::from_slice(&data).unwrap_or_default()
+    }
+
+    fn write_alias(&self, alias: &str, canonical: &str) -> Result<(), InferError> {
+        let path = self.aliases_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut aliases = self.read_aliases();
+        aliases.insert(alias.to_string(), canonical.to_string());
+        let data = serde_json::to_vec_pretty(&aliases)
+            .map_err(|e| InferError::Manifest(e.to_string()))?;
+        // Atomic write: write to a temp file, then rename.
+        let tmp_path = path.with_extension("json.tmp");
+        std::fs::write(&tmp_path, &data)?;
+        std::fs::rename(&tmp_path, &path)?;
+        Ok(())
+    }
+
+    /// Register an alias pointing to a canonical model name.
+    /// Future daemon handlers can call this to expose short names (e.g. "mistral" →
+    /// "bartowski/Mistral-7B-v0.1-GGUF:Q4_K_M"). Only writes when alias != canonical.
+    pub fn add_alias(&self, alias: &str, canonical: &str) -> Result<(), InferError> {
+        if alias == canonical {
+            return Ok(());
+        }
+        self.write_alias(alias, canonical)
     }
 
     fn manifest_path_for(&self, name: &str) -> PathBuf {
