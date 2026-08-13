@@ -46,6 +46,7 @@ pub struct InferConfig {
     pub models_dir: PathBuf,
     pub vram_limit_bytes: Option<u64>,
     pub max_loaded_models: usize,
+    pub max_ctx: u32,
 }
 
 impl InferConfig {
@@ -53,11 +54,13 @@ impl InferConfig {
         models_dir: PathBuf,
         vram_limit_bytes: Option<u64>,
         max_loaded_models: usize,
+        max_ctx: u32,
     ) -> Self {
         Self {
             models_dir,
             vram_limit_bytes,
             max_loaded_models,
+            max_ctx,
         }
     }
 }
@@ -68,6 +71,7 @@ impl Default for InferConfig {
             models_dir: PathBuf::from("/var/lib/agentix/models"),
             vram_limit_bytes: None,
             max_loaded_models: 2,
+            max_ctx: 32768,
         }
     }
 }

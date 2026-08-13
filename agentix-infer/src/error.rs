@@ -32,4 +32,11 @@ pub enum InferError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("context window exceeded: prompt is {prompt_tokens} tokens, max_new_tokens is {max_new_tokens}, but context window is only {context_window}")]
+    ContextExceeded {
+        prompt_tokens: u32,
+        max_new_tokens: u32,
+        context_window: u32,
+    },
 }

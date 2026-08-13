@@ -35,6 +35,8 @@ pub struct LlamaCppLoadedModel {
     tx: std::sync::mpsc::SyncSender<InferMessage>,
     vram_est: u64,
     is_embedding: bool,
+    #[allow(dead_code)] // stored for future tokenize/context-info APIs
+    n_ctx: u32,
 }
 
 pub struct LlamaCppBackend {
@@ -43,6 +45,9 @@ pub struct LlamaCppBackend {
     /// Reads `AGENTIX_GPU_LAYERS` env var; defaults to `u32::MAX` when the
     /// `cuda` feature is enabled, 0 (CPU-only) otherwise.
     n_gpu_layers: u32,
+    /// Maximum context window size for completion models.
+    /// Reads `AGENTIX_MAX_CTX` env var; defaults to 32768.
+    max_ctx: u32,
 }
 
 impl LlamaCppBackend {
@@ -59,10 +64,16 @@ impl LlamaCppBackend {
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(if cfg!(feature = "cuda") { u32::MAX } else { 0 });
 
-        tracing::info!(n_gpu_layers, cuda = cfg!(feature = "cuda"), "LlamaCppBackend initialised");
+        let max_ctx = std::env::var("AGENTIX_MAX_CTX")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(32768);
+
+        tracing::info!(n_gpu_layers, max_ctx, cuda = cfg!(feature = "cuda"), "LlamaCppBackend initialised");
         Ok(Self {
             backend: Arc::new(backend),
             n_gpu_layers,
+            max_ctx,
         })
     }
 }
@@ -123,7 +134,11 @@ impl InferBackend for LlamaCppBackend {
         );
 
         // Completion models get a larger context window; embedding models cap at 4096.
-        let max_ctx = if is_embedding { 4096u32 } else { 8192u32 };
+        let max_ctx = if is_embedding {
+            4096u32
+        } else {
+            self.max_ctx
+        };
         let n_ctx_val = info.context_length.clamp(64, max_ctx).max(256);
         let size_bytes = info.size_bytes;
 
@@ -205,6 +220,7 @@ impl InferBackend for LlamaCppBackend {
             tx,
             vram_est: size_bytes,
             is_embedding,
+            n_ctx: n_ctx_val,
         }))
     }
 }
@@ -294,6 +310,17 @@ fn complete_sync(
         return;
     }
 
+    let n_ctx = ctx.n_ctx();
+    let max_new = req.max_tokens.unwrap_or(1024);
+    if tokens.len() as u32 + max_new > n_ctx {
+        let _ = tx.send(Err(InferError::ContextExceeded {
+            prompt_tokens: tokens.len() as u32,
+            max_new_tokens: max_new,
+            context_window: n_ctx,
+        }));
+        return;
+    }
+
     ctx.clear_kv_cache();
 
     // Prefill: add all prompt tokens in one batch, only last needs logits.
@@ -322,7 +349,6 @@ fn complete_sync(
         LlamaSampler::dist(0xDEAD_BEEF),
     ]);
 
-    let max_new = req.max_tokens.unwrap_or(1024);
     let mut n_pos = n_prompt;
 
     for i in 0..max_new {

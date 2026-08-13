@@ -22,6 +22,7 @@ async fn main() -> Result<()> {
         cfg.models_dir.clone(),
         cfg.vram_limit_bytes,
         cfg.max_loaded_models,
+        cfg.max_ctx,
     );
     let infer = agentix_infer::InferEngine::new(infer_cfg).await?;
 

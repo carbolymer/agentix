@@ -4,63 +4,83 @@
   pkgs,
   ...
 }: let
-  cfg = config.services.agentix;
+  cfg = config.services.agentix-daemon;
 in {
-  options.services.agentix = {
-    enable = lib.mkEnableOption "agentix-daemon AI orchestrator";
+  options.services.agentix-daemon = {
+    enable = lib.mkEnableOption "agentix-daemon inference gateway";
 
     package = lib.mkOption {
       type = lib.types.package;
       description = "The agentix-daemon package to use.";
     };
 
-    dataDir = lib.mkOption {
-      type = lib.types.path;
-      default = "/var/lib/agentix";
-      description = "State directory for agentix (sled, vector index, tantivy).";
-    };
-
-    modelWeightsDir = lib.mkOption {
-      type = lib.types.path;
-      default = "/var/lib/agentix/models";
-      description = "Directory containing GGUF model weight files.";
-    };
-
-    gatewayPort = lib.mkOption {
+    port = lib.mkOption {
       type = lib.types.port;
-      default = 11434;
+      default = 11430;
       description = "Port for the OpenAI-compatible HTTP gateway.";
     };
 
-    localModel = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      example = "qwen2.5-coder-32b-instruct-q4_k_m.gguf";
-      description = "Filename of the GGUF model to load for local inference. Null disables local inference.";
+    modelsDir = lib.mkOption {
+      type = lib.types.path;
+      default = "/var/lib/agentix/models";
+      description = "Directory where pulled GGUF blobs and manifests are stored.";
     };
 
-    defaultRoute = lib.mkOption {
-      type = lib.types.enum ["local" "anthropic" "openai"];
-      default = "anthropic";
-      description = "Default backend for unrecognised model names.";
+    maxCtx = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 32768;
+      example = 65536;
+      description = ''
+        Maximum context window (tokens) allocated per model.
+        Larger values consume more VRAM; set based on your GPU.
+        Rough guidance: 3090 (24 GB) → 32768–65536 for 7–32B Q4_K_M models.
+      '';
     };
 
-    cudaDevice = lib.mkOption {
+    gpuLayers = lib.mkOption {
       type = lib.types.int;
-      default = 0;
-      description = "CUDA device index for local inference.";
+      default = -1;
+      description = ''
+        Number of model layers to offload to GPU. -1 offloads all layers
+        (requires the cuda-enabled build). Set to 0 for CPU-only inference.
+      '';
+    };
+
+    maxLoadedModels = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 2;
+      description = "Maximum number of models kept resident in memory simultaneously.";
+    };
+
+    vramLimitBytes = lib.mkOption {
+      type = lib.types.nullOr lib.types.ints.positive;
+      default = null;
+      example = 23000000000;
+      description = "Hard VRAM cap in bytes. Null means no explicit limit.";
     };
 
     environmentFile = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default = null;
-      description = "Path to a file containing environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.).";
+      description = ''
+        Path to a file containing secret environment variables, one per line:
+          ANTHROPIC_API_KEY=sk-ant-...
+          OPENAI_API_KEY=sk-...
+          OPENROUTER_API_KEY=sk-or-...
+        Compatible with sops-nix and agenix EnvironmentFile patterns.
+      '';
+    };
+
+    ollamaBaseUrl = lib.mkOption {
+      type = lib.types.str;
+      default = "http://localhost:11434";
+      description = "Base URL of an Ollama instance used for Ollama-compat proxy endpoints.";
     };
 
     extraEnv = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
       default = {};
-      description = "Extra environment variables passed to the daemon.";
+      description = "Additional environment variables passed verbatim to the daemon.";
     };
   };
 
@@ -68,28 +88,36 @@ in {
     users.users.agentix = {
       isSystemUser = true;
       group = "agentix";
-      home = cfg.dataDir;
+      home = "/var/lib/agentix";
       description = "agentix-daemon service user";
-      extraGroups = ["video"]; # GPU device access
+      # GPU access: render covers both NVIDIA (via nvidia-uvm) and AMD/Intel.
+      # video is needed for some driver paths that check group membership.
+      extraGroups = ["video" "render"];
     };
 
     users.groups.agentix = {};
 
     systemd.services.agentix-daemon = {
-      description = "agentix-daemon AI orchestrator gateway";
+      description = "agentix inference gateway";
       wantedBy = ["multi-user.target"];
       after = ["network.target"];
 
       environment =
         {
-          AGENTIX_GATEWAY_PORT = toString cfg.gatewayPort;
-          AGENTIX_DATA_DIR = cfg.dataDir;
-          AGENTIX_MODEL_WEIGHTS_DIR = cfg.modelWeightsDir;
-          AGENTIX_DEFAULT_ROUTE = cfg.defaultRoute;
-          CUDA_VISIBLE_DEVICES = toString cfg.cudaDevice;
+          AGENTIX_GATEWAY_PORT = toString cfg.port;
+          AGENTIX_MODELS_DIR = cfg.modelsDir;
+          AGENTIX_MAX_CTX = toString cfg.maxCtx;
+          # gpuLayers -1 means "all layers" — u32::MAX in the daemon, but the
+          # env var is parsed as u32 so we map -1 → pass nothing (daemon
+          # defaults to u32::MAX when CUDA feature is enabled).
+          AGENTIX_MAX_LOADED_MODELS = toString cfg.maxLoadedModels;
+          OLLAMA_BASE_URL = cfg.ollamaBaseUrl;
         }
-        // lib.optionalAttrs (cfg.localModel != null) {
-          AGENTIX_LOCAL_MODEL = cfg.localModel;
+        // lib.optionalAttrs (cfg.gpuLayers >= 0) {
+          AGENTIX_GPU_LAYERS = toString cfg.gpuLayers;
+        }
+        // lib.optionalAttrs (cfg.vramLimitBytes != null) {
+          AGENTIX_VRAM_LIMIT_BYTES = toString cfg.vramLimitBytes;
         }
         // cfg.extraEnv;
 
@@ -101,10 +129,12 @@ in {
         User = "agentix";
         Group = "agentix";
 
+        # agentix manages its own sub-directory layout under StateDirectory.
         StateDirectory = "agentix";
         StateDirectoryMode = "0750";
 
-        # Allow GPU access
+        # GPU passthrough: disable PrivateDevices so CUDA/NVIDIA UVM devices
+        # are visible, then explicitly allow the relevant device classes.
         PrivateDevices = false;
         DeviceAllow = [
           "char-drm rw"
@@ -112,13 +142,14 @@ in {
           "char-nvidia-uvm rw"
         ];
 
+        # Load secret env vars (API keys) from a file outside the Nix store.
         EnvironmentFile = lib.mkIf (cfg.environmentFile != null) cfg.environmentFile;
       };
     };
 
-    # Create model weights dir if it differs from dataDir
-    systemd.tmpfiles.rules = lib.optionals (cfg.modelWeightsDir != "${cfg.dataDir}/models") [
-      "d ${cfg.modelWeightsDir} 0750 agentix agentix -"
+    # Ensure modelsDir exists with correct ownership if it differs from StateDirectory.
+    systemd.tmpfiles.rules = lib.optionals (toString cfg.modelsDir != "/var/lib/agentix/models") [
+      "d ${cfg.modelsDir} 0750 agentix agentix -"
     ];
   };
 }

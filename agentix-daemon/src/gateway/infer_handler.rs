@@ -125,17 +125,19 @@ pub async fn complete(
     api_req: &agentix_api::ChatCompletionRequest,
     resolved_model: &str,
 ) -> Response {
-    let messages: Vec<CompletionMessage> = api_req
-        .messages
-        .iter()
-        .map(|m| CompletionMessage {
+    let mut messages: Vec<CompletionMessage> = Vec::with_capacity(api_req.messages.len());
+    for m in &api_req.messages {
+        let content = match normalize_content(&m.content) {
+            Ok(s) => s,
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, e).into_response();
+            }
+        };
+        messages.push(CompletionMessage {
             role: m.role.clone(),
-            content: match &m.content {
-                serde_json::Value::String(s) => s.clone(),
-                other => other.to_string(),
-            },
-        })
-        .collect();
+            content,
+        });
+    }
 
     let stop: Vec<String> = api_req
         .extra
@@ -239,7 +241,14 @@ pub async fn complete(
                     }
                 }
                 Err(e) => {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("stream error: {e}"))
+                    return (
+                        if matches!(e, agentix_infer::InferError::ContextExceeded { .. }) {
+                            StatusCode::BAD_REQUEST
+                        } else {
+                            StatusCode::INTERNAL_SERVER_ERROR
+                        },
+                        format!("stream error: {e}"),
+                    )
                         .into_response()
                 }
             }
@@ -275,4 +284,36 @@ fn uuid_simple() -> String {
         .unwrap_or_default()
         .subsec_nanos();
     format!("{t:08x}")
+}
+
+fn normalize_content(content: &serde_json::Value) -> Result<String, String> {
+    match content {
+        serde_json::Value::String(s) => Ok(s.clone()),
+        serde_json::Value::Array(parts) => {
+            let mut text = String::new();
+            let mut has_images = false;
+            for part in parts {
+                match part.get("type").and_then(|t| t.as_str()) {
+                    Some("text") => {
+                        if let Some(t) = part.get("text").and_then(|v| v.as_str()) {
+                            text.push_str(t);
+                        }
+                    }
+                    Some("image_url") | Some("image") => {
+                        has_images = true;
+                    }
+                    _ => {}
+                }
+            }
+            if has_images && text.is_empty() {
+                Err("request contains only image content; vision is not yet supported by InferEngine — use a vision-capable API backend".to_string())
+            } else {
+                if has_images {
+                    tracing::warn!("image content parts in request ignored — vision not yet supported");
+                }
+                Ok(text)
+            }
+        }
+        other => Ok(other.to_string()),
+    }
 }

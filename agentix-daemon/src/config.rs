@@ -17,6 +17,9 @@ pub struct Config {
     #[serde(default = "default_max_loaded_models")]
     pub max_loaded_models: usize,
 
+    #[serde(default = "default_max_ctx")]
+    pub max_ctx: u32,
+
     #[allow(dead_code)] // reserved for future gateway auth
     pub agentix_api_key: Option<String>,
     pub anthropic_api_key: Option<String>,
@@ -42,6 +45,10 @@ fn default_max_loaded_models() -> usize {
     2
 }
 
+fn default_max_ctx() -> u32 {
+    32768
+}
+
 impl Config {
     pub fn from_env() -> Self {
         let gateway_port = std::env::var("AGENTIX_GATEWAY_PORT")
@@ -65,12 +72,18 @@ impl Config {
             .and_then(|v| v.parse().ok())
             .unwrap_or_else(default_max_loaded_models);
 
+        let max_ctx = std::env::var("AGENTIX_MAX_CTX")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(default_max_ctx);
+
         Self {
             gateway_port,
             ollama_base_url,
             models_dir,
             vram_limit_bytes,
             max_loaded_models,
+            max_ctx,
             agentix_api_key: std::env::var("AGENTIX_API_KEY").ok(),
             anthropic_api_key: std::env::var("ANTHROPIC_API_KEY").ok(),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),

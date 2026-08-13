@@ -36,5 +36,8 @@
     }
     // {
       inherit inputs;
+      nixosModules = {
+        agentix-daemon = import ./nixosModules/agentix.nix;
+      };
     };
 }
