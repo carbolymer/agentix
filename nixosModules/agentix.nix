@@ -133,14 +133,11 @@ in {
         StateDirectory = "agentix";
         StateDirectoryMode = "0750";
 
-        # GPU passthrough: disable PrivateDevices so CUDA/NVIDIA UVM devices
-        # are visible, then explicitly allow the relevant device classes.
+        # GPU passthrough: PrivateDevices = false leaves the host /dev intact.
+        # Do NOT add DeviceAllow — any DeviceAllow entry causes systemd to
+        # install a cgroup device BPF filter blocking everything not listed,
+        # which breaks CUDA even when the device nodes are world-readable.
         PrivateDevices = false;
-        DeviceAllow = [
-          "char-drm rw"
-          "char-nvidia-frontend rw"
-          "char-nvidia-uvm rw"
-        ];
 
         # Load secret env vars (API keys) from a file outside the Nix store.
         EnvironmentFile = lib.mkIf (cfg.environmentFile != null) cfg.environmentFile;
