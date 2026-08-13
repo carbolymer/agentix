@@ -69,29 +69,33 @@ async fn chat_completions_handler(
         }
     };
 
-    let target = state.model_router.route(&req.model);
+    // Check local store before consulting the router: HuggingFace model names contain '/'
+    // (e.g. "org/repo:tag") which the router's provider/model heuristic would wrongly send
+    // to OpenRouter. A local hit always wins.
+    let local_resolved = resolve_local_model(&state, &req.model).await;
+
+    let target = if local_resolved.is_some() {
+        RouteTarget::Local
+    } else {
+        state.model_router.route(&req.model)
+    };
     tracing::debug!(model = %req.model, target = ?target, "routing chat completion");
 
     match target {
         RouteTarget::Anthropic => anthropic::proxy_chat(&state, headers, body).await,
         RouteTarget::OpenAI => openai_proxy::proxy_chat(&state, headers, body).await,
         RouteTarget::OpenRouter => openai_proxy::proxy_openrouter(&state, headers, body).await,
-        RouteTarget::Local => {
-            // Resolve the requested model name to whatever the InferEngine stored it as.
-            // No Ollama fallback — all local completions go through InferEngine.
-            // Pull models into InferEngine with POST /api/pull first.
-            match resolve_local_model(&state, &req.model).await {
-                Some(resolved) => infer_handler::complete(&state, &req, &resolved).await,
-                None => (
-                    StatusCode::NOT_FOUND,
-                    format!(
-                        "model '{}' not found in InferEngine — pull it first with POST /api/pull",
-                        req.model
-                    ),
-                )
-                    .into_response(),
-            }
-        }
+        RouteTarget::Local => match local_resolved {
+            Some(resolved) => infer_handler::complete(&state, &req, &resolved).await,
+            None => (
+                StatusCode::NOT_FOUND,
+                format!(
+                    "model '{}' not found in InferEngine — pull it first with POST /api/pull",
+                    req.model
+                ),
+            )
+                .into_response(),
+        },
     }
 }
 

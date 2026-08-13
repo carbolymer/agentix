@@ -108,15 +108,19 @@ impl ModelStore {
                     .unwrap_or(false)
             {
                 if let Ok(m) = manifest::read_manifest(&path) {
-                    // Reconstruct name from path relative to manifests/
-                    let manifests_dir = self.models_dir.join("manifests");
+                    // Reconstruct name: strip "manifests/agentix/" prefix and "/latest" suffix.
+                    // Layout on disk: manifests/agentix/<name>/latest
+                    let agentix_dir = self.models_dir.join("manifests").join("agentix");
                     let name = path
-                        .strip_prefix(&manifests_dir)
+                        .strip_prefix(&agentix_dir)
                         .ok()
+                        .and_then(|p| p.parent()) // drop the "latest" filename
                         .and_then(|p| p.to_str())
                         .unwrap_or("")
                         .to_string();
-                    out.push(manifest::manifest_to_model_info(name, &m));
+                    if !name.is_empty() {
+                        out.push(manifest::manifest_to_model_info(name, &m));
+                    }
                 }
             }
         }
