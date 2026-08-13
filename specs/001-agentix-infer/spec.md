@@ -127,3 +127,4 @@ An operator wants to load a Laguna model (safetensors format) that has no GGUF r
 - The Candle backend (Phase 2) is sequenced independently and does not block Phase 1 delivery; Phase 1 is complete when SC-001 through SC-005 and SC-007 through SC-008 pass.
 - llama.cpp blocking C FFI calls are wrapped with `tokio::task::spawn_blocking`; callers treat the engine as fully async.
 - The Nix flake build gains CUDA toolkit inputs for the daemon derivation; non-CUDA builds remain possible by omitting the `cuda` feature.
+- The NixOS module lives at `flake/nixosModules/agentix.nix` as a flake-parts module (wrapper + NixOS content inline; `recursiveImports` picks it up automatically). GPU architecture selection is driven by `nixpkgs.config.cudaCapabilities`; the module emits a `config.warnings` entry when that option is unset so operators know inference will be CPU-only.
