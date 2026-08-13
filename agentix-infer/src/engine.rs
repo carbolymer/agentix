@@ -68,6 +68,15 @@ impl InferEngine {
         self.store().info(name)
     }
 
+    /// Returns the names of all registered backends (e.g. `["llamacpp"]`).
+    pub fn backend_names(&self) -> Vec<&'static str> {
+        self.inner
+            .backends
+            .read()
+            .map(|b| b.iter().map(|b| b.name()).collect())
+            .unwrap_or_default()
+    }
+
     // ── Inference ────────────────────────────────────────────────────────────
 
     pub async fn embed(&self, model: &str, input: &str) -> Result<Vec<f32>, InferError> {

@@ -17,6 +17,13 @@
         --symlink ${pkgs.bash}/bin/bash /bin/sh \
         -- ${toolchain}/bin/cargo "$@"
     '';
+    # Pinned GGUF fixture for integration tests (all-MiniLM-L6-v2, embedding-only, ~25 MB).
+    # sha256 obtained via: nix store prefetch-file --json '<url>'
+    fixture-model = pkgs.fetchurl {
+      name = "all-MiniLM-L6-v2-Q8_0.gguf";
+      url = "https://huggingface.co/second-state/All-MiniLM-L6-v2-Embedding-GGUF/resolve/main/all-MiniLM-L6-v2-Q8_0.gguf";
+      sha256 = "sha256-JjIVw8rdbhZ0B0GnYkq0y7bI53doi9UzHs+/VoHC+O0=";
+    };
   in {
     devShells.default = pkgs.mkShell {
       packages = with pkgs; [
@@ -73,6 +80,8 @@
         _CARGO_WRAP_DIR=$(mktemp -d)
         ln -s ${cargoWrapper} "$_CARGO_WRAP_DIR/cargo"
         export PATH="$_CARGO_WRAP_DIR:$PATH"
+        # Fixture GGUF for integration tests — pinned FOD derivation, no network needed
+        export AGENTIX_TEST_MODEL_PATH="${fixture-model}"
         echo "Agentic RAG Stack"
         echo ""
         echo "Services:"

@@ -10,8 +10,12 @@ pub async fn handler(State(state): State<AppState>) -> impl IntoResponse {
     };
 
     let local_models = state.infer.list().await;
+    let backends = state.infer.backend_names();
+    let infer_active = !backends.is_empty();
     let infer_status = serde_json::json!({
-        "loaded_models": local_models.len(),
+        "active": infer_active,
+        "backends": backends,
+        "model_count": local_models.len(),
         "models": local_models.iter().map(|m| &m.name).collect::<Vec<_>>(),
     });
 

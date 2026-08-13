@@ -106,6 +106,33 @@ pub struct CompletionMessage {
     pub content: String,
 }
 
+impl CompletionRequest {
+    pub fn new(
+        messages: Vec<CompletionMessage>,
+        max_tokens: Option<u32>,
+        temperature: Option<f32>,
+        top_p: Option<f32>,
+        stop: Vec<String>,
+    ) -> Self {
+        Self {
+            messages,
+            max_tokens,
+            temperature,
+            top_p,
+            stop,
+        }
+    }
+}
+
+impl CompletionMessage {
+    pub fn new(role: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: content.into(),
+        }
+    }
+}
+
 #[non_exhaustive]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CompletionChunk {

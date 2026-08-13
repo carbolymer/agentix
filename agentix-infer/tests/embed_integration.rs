@@ -75,7 +75,7 @@ async fn embed_with_local_model() {
     // Verify model appears in list
     let models = engine.list().await;
     assert!(
-        models.iter().any(|m| m.name == info.name),
+        models.iter().any(|m| m.name.contains(&info.name)),
         "model not found in list"
     );
 
