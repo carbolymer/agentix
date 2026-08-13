@@ -84,7 +84,10 @@
     cudaPackages = pkgs.cudaPackages_12;
     libcublasStatic = pkgs.lib.getOutput "static" cudaPackages.libcublas;
 
-    cudaArgs = {
+    cudaCapabilities = pkgs.config.cudaCapabilities or [];
+    withCuda = cudaCapabilities != [];
+
+    cudaArgs = lib.optionalAttrs withCuda {
       # cuda_nvcc provides the nvcc binary and a setup hook that adds CUDA
       # component include paths to NVCC_PREPEND_FLAGS, making cuda_runtime.h
       # findable in the Nix sandbox (cudatoolkit's nvcc wrapper does not do this).
@@ -100,19 +103,22 @@
         libcublasStatic
       ];
       CMAKE_CUDA_COMPILER = "${cudaPackages.cuda_nvcc}/bin/nvcc";
-      # sm_120 = RTX 5090 Laptop (Blackwell GB20x). Without this cmake
-      # tries to auto-detect via a JIT compilation that fails in the sandbox.
-      CMAKE_CUDA_ARCHITECTURES = "120";
+      # Derived from nixpkgs.config.cudaCapabilities. cmake auto-detect fails
+      # in the Nix sandbox (no GPU), so all targets must be listed explicitly.
+      CMAKE_CUDA_ARCHITECTURES = builtins.concatStringsSep ";" (
+        map (c: builtins.replaceStrings ["."] [""] c) cudaCapabilities
+      );
       CUDA_HOME = "${cudaPackages.cudatoolkit}";
       CUDA_PATH = "${cudaPackages.cudatoolkit}";
       CUDA_TOOLKIT_ROOT_DIR = "${cudaPackages.cudatoolkit}";
       RUSTFLAGS = "-L ${cudaPackages.cudatoolkit}/lib -L ${cudaPackages.cudatoolkit}/lib/stubs -L ${cudaPackages.cuda_cudart}/lib -L ${libcublasStatic}/lib";
     };
 
-    # Separate cargoArtifacts for the CUDA-enabled agentix-daemon build.
-    # Feature flags change how llama-cpp-sys-2 is compiled so CUDA and
-    # non-CUDA artifacts cannot be shared.
-    cudaCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cudaArgs);
+    # Separate cargoArtifacts for the CUDA-enabled build; CPU build reuses
+    # commonArgs cargoArtifacts since feature flags change the compiled output.
+    cudaCargoArtifacts = lib.optionalAttrs withCuda {
+      value = craneLib.buildDepsOnly (commonArgs // cudaArgs);
+    };
 
     # Full source tree for agentix-* workspace packages.
     agentixSrc = lib.fileset.toSource {
@@ -136,11 +142,11 @@
       // cudaArgs
       // {
         src = agentixSrc;
-        cargoArtifacts = cudaCargoArtifacts;
-        cargoExtraArgs = "--package agentix-daemon --features cuda";
+        cargoArtifacts = if withCuda then cudaCargoArtifacts.value else cargoArtifacts;
+        cargoExtraArgs = "--package agentix-daemon" + lib.optionalString withCuda " --features cuda";
         # libcuda.so.1 is the NVIDIA driver API — present on the host at
         # runtime but never in the Nix store at build time.
-        autoPatchelfIgnoreMissingDeps = ["libcuda.so.1"];
+        autoPatchelfIgnoreMissingDeps = lib.optional withCuda "libcuda.so.1";
       });
 
     axPkg = craneLib.buildPackage (commonArgs

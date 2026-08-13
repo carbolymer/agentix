@@ -4,10 +4,10 @@
     _module.args.pkgs = import inputs.nixpkgs {
       inherit system;
       config.allowUnfree = true;
-      # RTX 5090 / Blackwell (sm_120). Required for nix build .#agentix-daemon
-      # to compile llama-cpp-sys-2 with correct GPU kernels.
+      # Default targets for local nix build: RTX 3090/Ampere (8.6) + RTX 5090/Blackwell (12.0).
+      # Override in your NixOS config via nixpkgs.config.cudaCapabilities to match your GPU.
       # devShell cargo builds auto-detect via cmake so this only affects Nix builds.
-      config.cudaCapabilities = ["12.0"];
+      config.cudaCapabilities = ["8.6" "12.0"];
     };
   };
 }

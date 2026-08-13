@@ -85,6 +85,16 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    warnings = lib.optional (pkgs.config.cudaCapabilities or [] == []) ''
+      agentix-daemon: nixpkgs.config.cudaCapabilities is not set.
+      The daemon package was built without GPU-specific CUDA kernels and will
+      fall back to CPU-only inference.  Set this in your NixOS configuration:
+
+        nixpkgs.config.cudaCapabilities = [ "8.6" ];  # RTX 3090
+        nixpkgs.config.cudaCapabilities = [ "8.9" ];  # RTX 4090
+        nixpkgs.config.cudaCapabilities = [ "12.0" ]; # RTX 5090
+    '';
+
     users.users.agentix = {
       isSystemUser = true;
       group = "agentix";
