@@ -15,9 +15,15 @@
         description = "The agentix-daemon package to use.";
       };
 
+      host = lib.mkOption {
+        type = lib.types.str;
+        default = "[::]";
+        description = "Address the HTTP gateway binds to.";
+      };
+
       port = lib.mkOption {
         type = lib.types.port;
-        default = 11430;
+        default = 11434;
         description = "Port for the OpenAI-compatible HTTP gateway.";
       };
 
@@ -115,6 +121,7 @@
 
         environment =
           {
+            AGENTIX_GATEWAY_HOST = cfg.host;
             AGENTIX_GATEWAY_PORT = toString cfg.port;
             AGENTIX_MODELS_DIR = cfg.modelsDir;
             AGENTIX_MAX_CTX = toString cfg.maxCtx;

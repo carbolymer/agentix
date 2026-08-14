@@ -3,6 +3,9 @@ use std::path::PathBuf;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
+    #[serde(default = "default_gateway_host")]
+    pub gateway_host: String,
+
     #[serde(default = "default_gateway_port")]
     pub gateway_port: u16,
 
@@ -29,8 +32,12 @@ pub struct Config {
     pub openai_base_url: Option<String>,
 }
 
+fn default_gateway_host() -> String {
+    "0.0.0.0".into()
+}
+
 fn default_gateway_port() -> u16 {
-    11430
+    11434
 }
 
 fn default_ollama_base_url() -> String {
@@ -51,6 +58,9 @@ fn default_max_ctx() -> u32 {
 
 impl Config {
     pub fn from_env() -> Self {
+        let gateway_host =
+            std::env::var("AGENTIX_GATEWAY_HOST").unwrap_or_else(|_| default_gateway_host());
+
         let gateway_port = std::env::var("AGENTIX_GATEWAY_PORT")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -78,6 +88,7 @@ impl Config {
             .unwrap_or_else(default_max_ctx);
 
         Self {
+            gateway_host,
             gateway_port,
             ollama_base_url,
             models_dir,
