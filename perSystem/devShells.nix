@@ -96,7 +96,7 @@
         echo "MCP server:"
         echo "  just build                 # Build the Rust binary"
         echo "  just mcp                   # Run the MCP server"
-        echo "  nix build .#mcp-server     # Build with Nix (requires Cargo.lock)"
+        echo "  nix build .#agentix-mcp-server  # Build with Nix (requires Cargo.lock)"
         echo ""
         echo "Quick search (no services needed):"
         echo "  ck search 'query'              # ad-hoc hybrid search"
