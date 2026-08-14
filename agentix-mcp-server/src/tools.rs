@@ -1,23 +1,18 @@
 use rmcp::{
-    Error as McpError, ServerHandler,
     model::{CallToolResult, Content, ServerCapabilities, ServerInfo},
-    schemars, tool,
+    schemars, tool, Error as McpError, ServerHandler,
 };
 use serde::Deserialize;
 use sqlx::PgPool;
 
-use mcp_server::ingest::{
-    crates::ingest_crate,
-    embed::ensure_embed_model,
-    hackage::ingest_hackage,
-    pypi::ingest_pypi,
+use agentix_indexer::ingest::{
+    crates::ingest_crate, embed::ensure_embed_model, hackage::ingest_hackage, pypi::ingest_pypi,
 };
 
 /// Returns a warning string if the Ollama embed model is loaded on CPU (size_vram == 0).
 /// Empty string if GPU is in use or the check fails.
 async fn gpu_warning() -> String {
-    let host = std::env::var("OLLAMA_HOST")
-        .unwrap_or_else(|_| "http://127.0.0.1:11434".into());
+    let host = std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://127.0.0.1:11434".into());
     let Ok(resp) = reqwest::get(format!("{host}/api/ps")).await else {
         return String::new();
     };
@@ -28,8 +23,7 @@ async fn gpu_warning() -> String {
         .as_array()
         .map(|models| {
             models.iter().any(|m| {
-                m["size"].as_u64().unwrap_or(0) > 0
-                    && m["size_vram"].as_u64().unwrap_or(0) == 0
+                m["size"].as_u64().unwrap_or(0) > 0 && m["size_vram"].as_u64().unwrap_or(0) == 0
             })
         })
         .unwrap_or(false);
@@ -43,7 +37,7 @@ async fn gpu_warning() -> String {
     }
 }
 
-use crate::{db, embed, fmt, rerank};
+use agentix_search::{db, embed, fmt, rerank};
 
 const RERANK_POOL_SIZE: i32 = 20;
 
@@ -195,7 +189,14 @@ impl CodeSearchServer {
         let repo_ref = repo_path.as_deref();
 
         let rows = match db::hybrid_search(
-            &self.pool, &query, &query_vec, candidates, lang_ref, kind_ref, repo_ref, &self.projects,
+            &self.pool,
+            &query,
+            &query_vec,
+            candidates,
+            lang_ref,
+            kind_ref,
+            repo_ref,
+            &self.projects,
         )
         .await
         {
@@ -486,7 +487,10 @@ impl CodeSearchServer {
             let placeholders: Vec<String> = (1..=repo_path_keys.len())
                 .map(|i| format!("repo_path = ${i}"))
                 .collect();
-            let q = format!("SELECT COUNT(*) FROM code_chunks WHERE {}", placeholders.join(" OR "));
+            let q = format!(
+                "SELECT COUNT(*) FROM code_chunks WHERE {}",
+                placeholders.join(" OR ")
+            );
             let mut query = sqlx::query_scalar(&q);
             for key in &repo_path_keys {
                 query = query.bind(key);
@@ -509,7 +513,9 @@ impl CodeSearchServer {
             ))]));
         }
         let result = match subcommand {
-            "hackage" => ingest_hackage(&self.pool, &package, &version, false, ingest_project).await,
+            "hackage" => {
+                ingest_hackage(&self.pool, &package, &version, false, ingest_project).await
+            }
             "crate" => ingest_crate(&self.pool, &package, &version, false, ingest_project).await,
             "pypi" => ingest_pypi(&self.pool, &package, &version, false, ingest_project).await,
             _ => Err(anyhow::anyhow!("unknown ecosystem: {ecosystem}")),
@@ -526,7 +532,10 @@ impl CodeSearchServer {
             let placeholders: Vec<String> = (1..=repo_path_keys.len())
                 .map(|i| format!("repo_path = ${i}"))
                 .collect();
-            let q = format!("SELECT COUNT(*) FROM code_chunks WHERE {}", placeholders.join(" OR "));
+            let q = format!(
+                "SELECT COUNT(*) FROM code_chunks WHERE {}",
+                placeholders.join(" OR ")
+            );
             let mut query = sqlx::query_scalar(&q);
             for key in &repo_path_keys {
                 query = query.bind(key);
@@ -566,14 +575,15 @@ impl CodeSearchServer {
             file_path,
         } = params;
 
-        let rows = match db::get_file_chunks(&self.pool, &repo_path, &file_path, &self.projects).await {
-            Ok(r) => r,
-            Err(e) => {
-                return Ok(CallToolResult::success(vec![Content::text(format!(
-                    "Database error: {e}"
-                ))]));
-            }
-        };
+        let rows =
+            match db::get_file_chunks(&self.pool, &repo_path, &file_path, &self.projects).await {
+                Ok(r) => r,
+                Err(e) => {
+                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Database error: {e}"
+                    ))]));
+                }
+            };
         if rows.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(format!(
                 "No chunks found for {repo_path}/{file_path}"
@@ -597,9 +607,7 @@ impl CodeSearchServer {
 
         // Build a stable, human-readable path under /tmp/agentic-nix/.
         // Sanitise repo_path (colons → underscores) so it's a valid directory name.
-        let safe_repo = repo_path
-            .replace("::", "__")
-            .replace([':', '/'], "_");
+        let safe_repo = repo_path.replace("::", "__").replace([':', '/'], "_");
         let out_path = std::path::PathBuf::from("/tmp/agentic-nix")
             .join(&safe_repo)
             .join(&file_path);

@@ -40,7 +40,10 @@ pub async fn ingest_git(
     project: Option<&str>,
 ) -> Result<()> {
     let tmp = TempDir::new().context("Failed to create temp directory")?;
-    let tmp_str = tmp.path().to_str().expect("tempdir path is not valid UTF-8");
+    let tmp_str = tmp
+        .path()
+        .to_str()
+        .expect("tempdir path is not valid UTF-8");
 
     // Clone the repository.
     if let Some(b) = branch.or(tag) {

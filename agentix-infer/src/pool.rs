@@ -113,10 +113,7 @@ impl ContextPool {
     /// If no load is in progress, register `name` as loading and return `false`.
     pub async fn wait_if_loading(&self, name: &str) -> bool {
         let notify = {
-            let map = self
-                .loading
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
+            let map = self.loading.lock().unwrap_or_else(|p| p.into_inner());
             map.get(name).cloned()
         };
         if let Some(notify) = notify {

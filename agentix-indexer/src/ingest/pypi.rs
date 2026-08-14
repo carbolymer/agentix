@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use flate2::read::GzDecoder;
 use serde::Deserialize;
 use sqlx::PgPool;
@@ -43,7 +43,9 @@ pub async fn ingest_pypi(
                 .unwrap_or(0);
 
         if count > 0 {
-            eprintln!("Package {pkg_ver} already indexed ({count} chunks). Use --force to re-index.");
+            eprintln!(
+                "Package {pkg_ver} already indexed ({count} chunks). Use --force to re-index."
+            );
             return Ok(());
         }
     }
@@ -91,7 +93,11 @@ pub async fn ingest_pypi(
         .await
         .context("Failed to read PyPI download body")?;
 
-    eprintln!("Downloaded {} ({} bytes). Extracting...", dist.filename, bytes.len());
+    eprintln!(
+        "Downloaded {} ({} bytes). Extracting...",
+        dist.filename,
+        bytes.len()
+    );
 
     let tmp = TempDir::new().context("Failed to create temp directory")?;
 
@@ -119,8 +125,7 @@ pub async fn ingest_pypi(
         // (the package directory is inside, not under a {name}-{version}/ wrapper).
         let mut zip = ZipArchive::new(Cursor::new(bytes.as_ref()))
             .context("Failed to open wheel zip archive")?;
-        zip.extract(tmp.path())
-            .context("Failed to extract wheel")?;
+        zip.extract(tmp.path()).context("Failed to extract wheel")?;
         // Index the whole temp dir — it contains the package tree directly.
         tmp.path().to_path_buf()
     } else {

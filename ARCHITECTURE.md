@@ -13,37 +13,55 @@
 ### Current
 
 ```
-agentix/                        (workspace root)
-├── src/                        mcp-server + ingest binaries
-│   ├── bin/mcp-server          MCP stdio server exposing search tools
-│   └── bin/ingest              repo ingestion pipeline (tree-sitter + embed)
+agentix/                        (workspace root — agentix-jails package)
+├── src/jail/                   claude-jail binary (bubblewrap sandbox for claude-code)
+├── src/ax_jail/                ax-jail binary (bubblewrap sandbox for agentix-ax)
+├── src/gh_proxy/               gh-jail-client + gh-jail-server binaries
 ├── agentix-api/                OpenAI-compatible request/response types (no deps)
 ├── agentix-router/             backend-selection routing (RouteTarget enum)
 │                               depends on: agentix-api
-├── agentix-infer/              in-process GGUF inference; replaces Ollama proxy for local models
-│                               features: llamacpp (default), candle, cuda
-│                               depends on: (none — pure library crate)
-├── agentix-daemon/             Axum HTTP server; routes to agentix-infer / cloud backends
-│                               depends on: agentix-api, agentix-router, agentix-infer
+│                               INVARIANT: MUST NOT depend on any C++ crate
+│                               (verified: cargo metadata shows zero C++ transitive deps)
+├── agentix-infer/              pure-Rust inference traits and types; no C++ deps
+│                               features: whisper (stub, reserved)
+│                               depends on: (none — pure Rust library crate)
+├── agentix-llama/              llama-cpp-2 GGUF inference backend (C++)
+│                               features: cuda
+│                               depends on: agentix-infer, llama-cpp-2
+├── agentix-daemon/             Axum HTTP server; routes to agentix-llama / cloud backends
+│                               depends on: agentix-api, agentix-router, agentix-infer, agentix-llama
+├── agentix-search/             PostgreSQL search library (BM25 + vector + reranking)
+│                               depends on: sqlx, fastembed, reqwest (no C++ inference)
+├── agentix-indexer/            repo ingestion pipeline (tree-sitter + embed)
+│                               depends on: agentix-search, tree-sitter-*
+├── agentix-mcp-server/         MCP stdio server exposing search tools
+│                               depends on: agentix-search, agentix-indexer, rmcp
 ├── agentix-harness/            agent loop library (no daemon dependency)
 └── agentix-ax/                 TUI agent; runs inside bubblewrap jail
 ```
 
-The daemon previously conflated HTTP serving, contract types, and routing logic.
-These are now split: `agentix-api` holds the wire types, `agentix-router` holds
-routing logic, and `agentix-infer` provides in-process GGUF inference so the
-daemon can serve embeddings and completions without Ollama.
+The workspace is decomposed so that changes to search, indexing, MCP server, or
+routing logic never trigger C++ recompilation of the inference backend. The key
+isolation boundary is `agentix-infer` (pure Rust traits) vs `agentix-llama`
+(llama-cpp-2, C++). Crates that don't need inference depend only on `agentix-infer`;
+only `agentix-daemon` and `agentix-llama` itself pull in the C++ build.
 
 ### Dependency rules (from constitution)
 
 ```
-agentix-daemon  →  agentix-api, agentix-router, agentix-infer
-agentix-ax      →  agentix-api, agentix-harness
-agentix-router  →  agentix-api
+agentix-daemon      →  agentix-api, agentix-router, agentix-infer, agentix-llama
+agentix-ax          →  agentix-api, agentix-harness
+agentix-router      →  agentix-api                    (NO C++ deps — invariant)
+agentix-llama       →  agentix-infer, llama-cpp-2
+agentix-mcp-server  →  agentix-search, agentix-indexer
+agentix-indexer     →  agentix-search
 ```
 
-Library crates (`agentix-api`, `agentix-router`, `agentix-harness`, `agentix-infer`)
-MUST NOT depend on `agentix-daemon`. No circular dependencies.
+Library crates (`agentix-api`, `agentix-router`, `agentix-harness`, `agentix-infer`,
+`agentix-search`) MUST NOT depend on `agentix-daemon`. No circular dependencies.
+
+**C++ isolation invariant**: `agentix-router` MUST NOT depend on any C++ crate.
+Verified by inspecting `cargo metadata` — zero C++ transitive deps on that path.
 
 ---
 
@@ -220,3 +238,5 @@ inconsistency to revisit when `agentix-infer` lands.
 | Jail ↔ daemon channel | HTTP over network | Unix socket + netns unshare | `claude-code` requires real HTTPS to Anthropic; open network is the constraint it imposes. Post-migration to `agentix-ax`, UDS + netns unshare becomes viable and should be reconsidered — it eliminates the open-egress exfiltration surface entirely |
 | Nix store in jail | Read-only bind + daemon proxy | Full writable store | Proxy blocks GC; agent can build without corrupting host store |
 | Model storage layout | Ollama-compatible content-addressed blobs | Custom layout | Existing Ollama models usable without re-download |
+| C++ isolation — infer split | `agentix-infer` (pure Rust traits) + `agentix-llama` (C++) | Single crate with feature flags | Feature-gated crate still pulls C++ into the dep graph for all consumers; separate crates mean search/indexer/router never trigger llama-cpp-2 recompilation |
+| C++ isolation — search/indexer | tree-sitter kept in `agentix-indexer`; fastembed kept in `agentix-search` | Move all C++ to agentix-llama | tree-sitter and fastembed are bounded C++ builds; removing them would require rewriting parsers and reranking in pure Rust for no practical gain |

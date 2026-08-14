@@ -474,17 +474,18 @@ async fn flush_bulk(records: Vec<ChunkRecord>, pool: PgPool) -> Result<usize> {
     let embeddings = embed_batch(&texts).await?;
 
     // Build typed arrays for UNNEST — one allocation per column, one round-trip total.
-    let repo_paths:   Vec<&str>          = records.iter().map(|r| r.repo_path.as_str()).collect();
-    let file_paths:   Vec<&str>          = records.iter().map(|r| r.file_path.as_str()).collect();
-    let indices:      Vec<i32>           = records.iter().map(|r| r.chunk_index).collect();
-    let contents:     Vec<&str>          = records.iter().map(|r| r.content.as_str()).collect();
-    let start_lines:  Vec<i32>           = records.iter().map(|r| r.start_line).collect();
-    let end_lines:    Vec<i32>           = records.iter().map(|r| r.end_line).collect();
-    let languages:    Vec<&str>          = records.iter().map(|r| r.language.as_str()).collect();
-    let symbol_kinds: Vec<Option<&str>>  = records.iter().map(|r| r.symbol_kind.as_deref()).collect();
-    let hashes:       Vec<&str>          = records.iter().map(|r| r.content_hash.as_str()).collect();
-    let mtimes:       Vec<Option<i64>>   = records.iter().map(|r| r.file_mtime).collect();
-    let vecs:         Vec<String>        = embeddings.iter().map(|e| vec_literal(e)).collect();
+    let repo_paths: Vec<&str> = records.iter().map(|r| r.repo_path.as_str()).collect();
+    let file_paths: Vec<&str> = records.iter().map(|r| r.file_path.as_str()).collect();
+    let indices: Vec<i32> = records.iter().map(|r| r.chunk_index).collect();
+    let contents: Vec<&str> = records.iter().map(|r| r.content.as_str()).collect();
+    let start_lines: Vec<i32> = records.iter().map(|r| r.start_line).collect();
+    let end_lines: Vec<i32> = records.iter().map(|r| r.end_line).collect();
+    let languages: Vec<&str> = records.iter().map(|r| r.language.as_str()).collect();
+    let symbol_kinds: Vec<Option<&str>> =
+        records.iter().map(|r| r.symbol_kind.as_deref()).collect();
+    let hashes: Vec<&str> = records.iter().map(|r| r.content_hash.as_str()).collect();
+    let mtimes: Vec<Option<i64>> = records.iter().map(|r| r.file_mtime).collect();
+    let vecs: Vec<String> = embeddings.iter().map(|e| vec_literal(e)).collect();
     // All chunks in a batch share the same project (one ingest call = one project).
     // Pass as a scalar TEXT[] so ON CONFLICT can merge it into the existing array.
     let project: Option<Vec<String>> = records
@@ -533,7 +534,6 @@ async fn flush_bulk(records: Vec<ChunkRecord>, pool: PgPool) -> Result<usize> {
 
     Ok(n)
 }
-
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 

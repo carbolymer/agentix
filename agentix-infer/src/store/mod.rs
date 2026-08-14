@@ -74,8 +74,9 @@ impl ModelStore {
             ModelFormat::Safetensors => BackendHint::Candle,
         };
 
-        // Use the original path string as the canonical name.
-        let name = path_str.to_string();
+        // Use the filename as the canonical name so that the manifest path stays
+        // within the store (absolute path_str in PathBuf::join would replace the base).
+        let name = filename.to_string();
 
         let manifest = build_manifest(&hash, size, format, backend, &detected, &name);
         let manifest_path = self.manifest_path_for(&name);
@@ -176,7 +177,11 @@ impl ModelStore {
         // Alias lookup: check _aliases.json for an alternate canonical name.
         let canonical = self.read_aliases().remove(name)?;
         let p2 = self.manifest_path_for(&canonical);
-        if p2.exists() { Some(p2) } else { None }
+        if p2.exists() {
+            Some(p2)
+        } else {
+            None
+        }
     }
 
     fn aliases_path(&self) -> PathBuf {
@@ -199,8 +204,8 @@ impl ModelStore {
         }
         let mut aliases = self.read_aliases();
         aliases.insert(alias.to_string(), canonical.to_string());
-        let data = serde_json::to_vec_pretty(&aliases)
-            .map_err(|e| InferError::Manifest(e.to_string()))?;
+        let data =
+            serde_json::to_vec_pretty(&aliases).map_err(|e| InferError::Manifest(e.to_string()))?;
         // Atomic write: write to a temp file, then rename.
         let tmp_path = path.with_extension("json.tmp");
         std::fs::write(&tmp_path, &data)?;

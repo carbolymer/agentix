@@ -1,12 +1,10 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use rmcp::{ServiceExt, transport::stdio};
+use rmcp::{transport::stdio, ServiceExt};
 use tracing_subscriber::{self, EnvFilter};
 
-mod db;
-mod embed;
-mod fmt;
-mod rerank;
+use agentix_search::{db, embed, fmt};
+
 mod tools;
 
 #[derive(Parser)]

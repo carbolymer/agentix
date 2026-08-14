@@ -31,6 +31,10 @@
             ../agentix-harness/Cargo.toml
             ../agentix-ax/Cargo.toml
             ../agentix-infer/Cargo.toml
+            ../agentix-search/Cargo.toml
+            ../agentix-indexer/Cargo.toml
+            ../agentix-llama/Cargo.toml
+            ../agentix-mcp-server/Cargo.toml
           ]
           ++ lib.optional (lib.pathExists ../Cargo.lock) ../Cargo.lock
         );
@@ -39,13 +43,10 @@
       pkgs.runCommand "crane-deps-src" {} ''
         cp -rT ${cargoFiles} $out
         chmod -R u+w $out
-        # Root crate stubs
-        mkdir -p $out/src/jail $out/src/ax_jail $out/src/ingest $out/src/gh_proxy
-        cp ${stubLib}  $out/src/lib.rs
-        cp ${stubMain} $out/src/main.rs
+        # Root crate stubs (agentix-jails: jail + ax-jail + gh-proxy only)
+        mkdir -p $out/src/jail $out/src/ax_jail $out/src/gh_proxy
         cp ${stubMain} $out/src/jail/main.rs
         cp ${stubMain} $out/src/ax_jail/main.rs
-        cp ${stubMain} $out/src/ingest/main.rs
         cp ${stubMain} $out/src/gh_proxy/client.rs
         cp ${stubMain} $out/src/gh_proxy/server.rs
         # Workspace member stubs
@@ -61,6 +62,15 @@
         cp ${stubMain} $out/agentix-ax/src/main.rs
         mkdir -p $out/agentix-infer/src
         cp ${stubLib} $out/agentix-infer/src/lib.rs
+        mkdir -p $out/agentix-search/src
+        cp ${stubLib} $out/agentix-search/src/lib.rs
+        mkdir -p $out/agentix-indexer/src
+        cp ${stubLib} $out/agentix-indexer/src/lib.rs
+        cp ${stubMain} $out/agentix-indexer/src/main.rs
+        mkdir -p $out/agentix-llama/src
+        cp ${stubLib} $out/agentix-llama/src/lib.rs
+        mkdir -p $out/agentix-mcp-server/src
+        cp ${stubMain} $out/agentix-mcp-server/src/main.rs
       '';
 
     # agentix-infer depends on llama-cpp-2 which drives a C++ build via cmake.
@@ -133,6 +143,10 @@
           ../agentix-harness
           ../agentix-ax
           ../agentix-infer
+          ../agentix-search
+          ../agentix-indexer
+          ../agentix-llama
+          ../agentix-mcp-server
         ]
         ++ lib.optional (lib.pathExists ../Cargo.lock) ../Cargo.lock
       );
@@ -156,6 +170,20 @@
         cargoExtraArgs = "--package agentix-ax";
       });
 
+    agentixMcpServerPkg = craneLib.buildPackage (commonArgs
+      // {
+        src = agentixSrc;
+        inherit cargoArtifacts;
+        cargoExtraArgs = "--package agentix-mcp-server";
+      });
+
+    agentixIndexerPkg = craneLib.buildPackage (commonArgs
+      // {
+        src = agentixSrc;
+        inherit cargoArtifacts;
+        cargoExtraArgs = "--package agentix-indexer";
+      });
+
     # Build a per-binary source tree: real files from keepFileset, plus
     # stubs at the listed paths so cargo finds all [[bin]]/[lib] entries.
     # binStubs get "fn main() {}", libStubs get an empty file.
@@ -177,6 +205,10 @@
               ../agentix-harness/Cargo.toml
               ../agentix-ax/Cargo.toml
               ../agentix-infer/Cargo.toml
+              ../agentix-search/Cargo.toml
+              ../agentix-indexer/Cargo.toml
+              ../agentix-llama/Cargo.toml
+              ../agentix-mcp-server/Cargo.toml
               keepFileset
             ]
             ++ lib.optional (lib.pathExists ../Cargo.lock) ../Cargo.lock
@@ -200,6 +232,15 @@
           cp ${stubMain} $out/agentix-ax/src/main.rs
           mkdir -p $out/agentix-infer/src
           cp ${stubLib} $out/agentix-infer/src/lib.rs
+          mkdir -p $out/agentix-search/src
+          cp ${stubLib} $out/agentix-search/src/lib.rs
+          mkdir -p $out/agentix-indexer/src
+          cp ${stubLib} $out/agentix-indexer/src/lib.rs
+          cp ${stubMain} $out/agentix-indexer/src/main.rs
+          mkdir -p $out/agentix-llama/src
+          cp ${stubLib} $out/agentix-llama/src/lib.rs
+          mkdir -p $out/agentix-mcp-server/src
+          cp ${stubMain} $out/agentix-mcp-server/src/main.rs
           ${lib.concatMapStringsSep "\n" (p: ''
             mkdir -p "$out/$(dirname "${p}")"
             cp ${stubMain} "$out/${p}"
@@ -212,59 +253,14 @@
           libStubs}
         '';
 
-    # Library source shared by mcp-server and ingest.
-    # src/lib.rs re-exports src/ingest/ submodules so they must be included.
-    libFileset = lib.fileset.unions [
-      ../src/lib.rs
-      ../src/db.rs
-      ../src/embed.rs
-      ../src/fmt.rs
-      ../src/rerank.rs
-      ../src/tools.rs
-      ../src/ingest
-    ];
-
-    mcpServerPkg = craneLib.buildPackage (commonArgs
-      // {
-        src = mkBinSrc (lib.fileset.union libFileset ../src/main.rs) {
-          binStubs = [
-            "src/jail/main.rs"
-            "src/ax_jail/main.rs"
-            "src/ingest/main.rs"
-            "src/gh_proxy/client.rs"
-            "src/gh_proxy/server.rs"
-          ];
-        };
-        inherit cargoArtifacts;
-        cargoExtraArgs = "--bin mcp-server";
-      });
-
-    ingestPkg = craneLib.buildPackage (commonArgs
-      // {
-        src = mkBinSrc (lib.fileset.union libFileset ../src/ingest) {
-          binStubs = [
-            "src/main.rs"
-            "src/jail/main.rs"
-            "src/ax_jail/main.rs"
-            "src/gh_proxy/client.rs"
-            "src/gh_proxy/server.rs"
-          ];
-        };
-        inherit cargoArtifacts;
-        cargoExtraArgs = "--bin ingest";
-      });
-
     claudeJailUnwrapped = craneLib.buildPackage (commonArgs
       // {
         src = mkBinSrc ../src/jail/main.rs {
           binStubs = [
-            "src/main.rs"
             "src/ax_jail/main.rs"
-            "src/ingest/main.rs"
             "src/gh_proxy/client.rs"
             "src/gh_proxy/server.rs"
           ];
-          libStubs = ["src/lib.rs"];
         };
         inherit cargoArtifacts;
         cargoExtraArgs = "--bin claude-jail";
@@ -274,13 +270,10 @@
       // {
         src = mkBinSrc ../src/gh_proxy/client.rs {
           binStubs = [
-            "src/main.rs"
             "src/ax_jail/main.rs"
-            "src/ingest/main.rs"
             "src/jail/main.rs"
             "src/gh_proxy/server.rs"
           ];
-          libStubs = ["src/lib.rs"];
         };
         inherit cargoArtifacts;
         cargoExtraArgs = "--bin gh-jail-client";
@@ -294,13 +287,10 @@
       // {
         src = mkBinSrc ../src/gh_proxy/server.rs {
           binStubs = [
-            "src/main.rs"
             "src/ax_jail/main.rs"
-            "src/ingest/main.rs"
             "src/jail/main.rs"
             "src/gh_proxy/client.rs"
           ];
-          libStubs = ["src/lib.rs"];
         };
         inherit cargoArtifacts;
         cargoExtraArgs = "--bin gh-jail-server";
@@ -310,13 +300,10 @@
       // {
         src = mkBinSrc ../src/ax_jail/main.rs {
           binStubs = [
-            "src/main.rs"
             "src/jail/main.rs"
-            "src/ingest/main.rs"
             "src/gh_proxy/client.rs"
             "src/gh_proxy/server.rs"
           ];
-          libStubs = ["src/lib.rs"];
         };
         inherit cargoArtifacts;
         cargoExtraArgs = "--bin ax-jail";
@@ -401,8 +388,8 @@
         pkgs.findutils
         pkgs.jq
         pkgs.gnused
-        ingestPkg
-        mcpServerPkg
+        agentixIndexerPkg
+        agentixMcpServerPkg
         axPkg
         axJailSanityCheck
       ];
@@ -430,14 +417,14 @@
         pkgs.ripgrep
         pkgs.gnused
         pkgs.openssh
-        ingestPkg
-        mcpServerPkg
+        agentixIndexerPkg
+        agentixMcpServerPkg
       ];
     };
   in {
-    packages.mcp-server = mcpServerPkg;
+    packages.agentix-mcp-server = agentixMcpServerPkg;
 
-    packages.ingest = ingestPkg;
+    packages.agentix-indexer = agentixIndexerPkg;
 
     # Wrapper that sets LD_LIBRARY_PATH so libcuda.so.1 (NVIDIA driver API,
     # not in the Nix store) is found at runtime. Also fixes the nix run binary

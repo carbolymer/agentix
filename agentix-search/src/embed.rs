@@ -38,9 +38,7 @@ pub async fn embed(text: &str) -> Result<Vec<f32>> {
         .send()
         .await
         .with_context(|| {
-            format!(
-                "Ollama unreachable at {ollama_host} (is Ollama running? model: {embed_model})"
-            )
+            format!("Ollama unreachable at {ollama_host} (is Ollama running? model: {embed_model})")
         })?
         .error_for_status()
         .with_context(|| format!("Ollama returned error status (model: {embed_model})"))?

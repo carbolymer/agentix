@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
     let infer = agentix_infer::InferEngine::new(infer_cfg).await?;
 
     // Register the LlamaCpp backend for GGUF model inference
-    use agentix_infer::backend::llamacpp::LlamaCppBackend;
+    use agentix_llama::LlamaCppBackend;
     match LlamaCppBackend::new() {
         Ok(backend) => {
             infer.register_backend(Arc::new(backend));

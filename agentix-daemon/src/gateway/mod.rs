@@ -7,6 +7,7 @@ mod openai_proxy;
 use crate::config::Config;
 use agentix_infer::InferEngine;
 use agentix_router::{RouteTarget, Router as ModelRouter};
+use anyhow::Context as _;
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -16,7 +17,6 @@ use axum::{
 };
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
-use anyhow::Context as _;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -144,10 +144,7 @@ async fn embeddings_handler(
     resp
 }
 
-async fn ollama_embed_handler(
-    State(state): State<AppState>,
-    body: axum::body::Bytes,
-) -> Response {
+async fn ollama_embed_handler(State(state): State<AppState>, body: axum::body::Bytes) -> Response {
     let resp = infer_handler::ollama_embed(&state, body.clone()).await;
     if resp.status() == StatusCode::NOT_FOUND {
         // Fall back to Ollama's /api/embed

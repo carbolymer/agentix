@@ -1,7 +1,7 @@
 pub mod backend;
 pub mod engine;
 pub mod error;
-mod meta;
+pub mod meta;
 pub mod pool;
 pub mod store;
 
@@ -138,4 +138,13 @@ impl CompletionMessage {
 pub struct CompletionChunk {
     pub delta: String,
     pub finish_reason: Option<FinishReason>,
+}
+
+impl CompletionChunk {
+    pub fn new(delta: String, finish_reason: Option<FinishReason>) -> Self {
+        Self {
+            delta,
+            finish_reason,
+        }
+    }
 }

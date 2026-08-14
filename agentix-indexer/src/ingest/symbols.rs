@@ -1184,7 +1184,9 @@ fn visit_c_node(
             let mut cursor = node.walk();
             for child in node.named_children(&mut cursor) {
                 match child.kind() {
-                    "function_definition" | "class_specifier" | "struct_specifier"
+                    "function_definition"
+                    | "class_specifier"
+                    | "struct_specifier"
                     | "type_definition" => visit_c_node(&child, source, lines, syms),
                     _ => {}
                 }
@@ -1450,7 +1452,11 @@ fn visit_kotlin_node(
                     Some(c) => format!("{c}.{fn_name}"),
                     None => fn_name,
                 };
-                let kind = if class_name.is_some() { "method" } else { "function" };
+                let kind = if class_name.is_some() {
+                    "method"
+                } else {
+                    "function"
+                };
                 syms.push(Symbol {
                     name: qualified,
                     kind: kind.into(),

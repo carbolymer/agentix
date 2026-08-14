@@ -69,9 +69,8 @@ impl GhProxy {
         allowed_repos: &[String],
         debug: bool,
     ) -> Result<Self> {
-        let server_bin = env::var("CLAUDE_JAIL_GH_SERVER").unwrap_or_else(|_| {
-            "gh-jail-server".into()
-        });
+        let server_bin =
+            env::var("CLAUDE_JAIL_GH_SERVER").unwrap_or_else(|_| "gh-jail-server".into());
 
         let mut cmd = Command::new(&server_bin);
         cmd.arg("--socket").arg(&socket_path);
@@ -306,10 +305,7 @@ fn main() -> Result<()> {
 
     // Bind the gh proxy socket directory so the socket is reachable inside.
     if let Some((ref proxy, _)) = gh_proxy {
-        let sock_dir = proxy
-            .socket_path
-            .parent()
-            .expect("socket path has parent");
+        let sock_dir = proxy.socket_path.parent().expect("socket path has parent");
         bind(&mut b, "--bind", sock_dir, sock_dir);
     }
 

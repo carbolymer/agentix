@@ -1,14 +1,13 @@
 # agentix Development Guidelines
 
-Auto-generated from feature plans and updated manually. Last updated: 2026-08-10
+Auto-generated from feature plans and updated manually. Last updated: 2026-08-13
 
 ## Active Technologies
-
-- Rust (edition 2021, Rust 1.80+)
-- Tokio async runtime
-- Axum HTTP framework (agentix-daemon)
-- llama-cpp-2 (GGUF inference, agentix-infer Phase 1)
-- candle (safetensors inference, agentix-infer Phase 2)
+- Rust edition 2021, Rust 1.80+ (via fenix stable toolchain in Nix)
+- llama-cpp-2 (C++, isolated in `agentix-llama`)
+- tree-sitter-* (C++, in `agentix-indexer`)
+- fastembed/onnxruntime (C++, in `agentix-search`)
+- tokio, axum, sqlx, rmcp, ratatui
 - PostgreSQL 17 + pg_search (BM25) + pgvector (HNSW)
 - Nix flakes (build + services)
 
@@ -16,15 +15,22 @@ Auto-generated from feature plans and updated manually. Last updated: 2026-08-10
 
 ```text
 agentix-api/         # OpenAI-compatible request/response types (no deps)
-agentix-router/      # Backend-selection routing (RouteTarget enum)
-agentix-infer/       # In-process inference library (GGUF + safetensors)
-agentix-daemon/      # HTTP gateway (Axum); assembles api + router + infer
+agentix-router/      # Backend-selection routing (RouteTarget enum); NO C++ deps
+agentix-infer/       # Pure-Rust inference traits, types, and ModelStore
+agentix-llama/       # llama-cpp-2 GGUF backend (C++; isolated here)
+agentix-daemon/      # HTTP gateway (Axum); assembles api + router + infer + llama
 agentix-harness/     # Agent loop library (state machine, tool dispatch)
 agentix-ax/          # TUI agent binary (Ratatui, links harness)
-src/                 # mcp-server + ingest binaries (root crate)
+agentix-search/      # PostgreSQL search library (BM25 + vector + reranking)
+agentix-indexer/     # Repo ingestion pipeline (tree-sitter + embed); bin: ingest
+agentix-mcp-server/  # MCP stdio server exposing search tools; bin: mcp-server
+src/                 # Jail binaries (claude-jail, ax-jail, gh-jail-*)
 ```
 
-Dependency flow: `agentix-api` → `agentix-router`, `agentix-infer` → `agentix-daemon`. No circular deps. The daemon is the only crate that binds a port.
+Dependency flow: `agentix-api` → `agentix-router` → `agentix-daemon`. C++ is isolated:
+`agentix-llama` (llama-cpp-2), `agentix-indexer` (tree-sitter), `agentix-search` (fastembed).
+Neither `agentix-router` nor `agentix-infer` have C++ transitive deps. No circular deps.
+The daemon is the only crate that binds a port.
 
 ## Commands
 
@@ -39,7 +45,7 @@ nix develop --command cargo test -p agentix-infer
 nix develop --command cargo test --workspace
 
 # Format check
-nix develop --command cargo fmt --check
+nix develop --command cargo fmt --all --check
 
 # Clippy (fails on warnings; unwrap_used + expect_used are enabled)
 nix develop --command cargo clippy -- -D warnings
@@ -74,3 +80,6 @@ Key constraints:
 
 <!-- MANUAL ADDITIONS START -->
 <!-- MANUAL ADDITIONS END -->
+
+## Recent Changes
+- 007-cargo-cleanup: Decomposed workspace — llama-cpp-2 isolated in `agentix-llama`; new crates: `agentix-search`, `agentix-indexer`, `agentix-mcp-server`; root crate renamed to `agentix-jails`; pure-Rust GGUF metadata parser added to `agentix-infer`

@@ -95,7 +95,7 @@ pub async fn ingest_github(
 // ── GitHub API client helpers ─────────────────────────────────────────────────
 
 fn gh_headers(token: &str) -> reqwest::header::HeaderMap {
-    use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue};
+    use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION};
     let mut headers = HeaderMap::new();
     headers.insert(
         ACCEPT,

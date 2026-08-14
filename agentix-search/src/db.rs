@@ -48,7 +48,11 @@ pub async fn hybrid_search(
 ) -> Result<Vec<ChunkRow>> {
     let vec_str = vec_literal(query_vec);
     // Over-fetch when filtering so we have enough after the WHERE clause prunes results
-    let candidates = if language.is_some() || symbol_kind.is_some() || repo_path.is_some() || !projects.is_empty() {
+    let candidates = if language.is_some()
+        || symbol_kind.is_some()
+        || repo_path.is_some()
+        || !projects.is_empty()
+    {
         (limit * 3).max(20)
     } else {
         limit

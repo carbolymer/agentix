@@ -34,7 +34,9 @@ pub async fn ollama_embed(state: &AppState, body: axum::body::Bytes) -> Response
     let input_refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
 
     match state.infer.embed_batch(&model, &input_refs).await {
-        Ok(embeddings) => axum::Json(serde_json::json!({ "embeddings": embeddings })).into_response(),
+        Ok(embeddings) => {
+            axum::Json(serde_json::json!({ "embeddings": embeddings })).into_response()
+        }
         Err(agentix_infer::InferError::ModelNotFound(_)) => {
             (StatusCode::NOT_FOUND, "model not in local store").into_response()
         }
@@ -154,14 +156,21 @@ pub async fn complete(
         messages,
         max_tokens: api_req.max_tokens,
         temperature: api_req.temperature,
-        top_p: api_req.extra.get("top_p").and_then(|v| v.as_f64()).map(|f| f as f32),
+        top_p: api_req
+            .extra
+            .get("top_p")
+            .and_then(|v| v.as_f64())
+            .map(|f| f as f32),
         stop,
     };
 
     let stream = match state.infer.complete(resolved_model, req).await {
         Ok(s) => s,
         Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("complete error: {e}"))
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("complete error: {e}"),
+            )
                 .into_response()
         }
     };
@@ -201,7 +210,10 @@ pub async fn complete(
                     "finish_reason": finish_reason,
                 }]
             });
-            let data = format!("data: {}\n\n", serde_json::to_string(&json).unwrap_or_default());
+            let data = format!(
+                "data: {}\n\n",
+                serde_json::to_string(&json).unwrap_or_default()
+            );
             Ok::<_, std::convert::Infallible>(data)
         });
 
@@ -219,9 +231,7 @@ pub async fn complete(
             .header(header::CACHE_CONTROL, "no-cache")
             .header(header::CONNECTION, "keep-alive")
             .body(body)
-            .unwrap_or_else(|e| {
-                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-            })
+            .unwrap_or_else(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response())
     } else {
         // Non-streaming: collect all chunks then return a single JSON object
         let mut full_content = String::new();
@@ -309,7 +319,9 @@ fn normalize_content(content: &serde_json::Value) -> Result<String, String> {
                 Err("request contains only image content; vision is not yet supported by InferEngine — use a vision-capable API backend".to_string())
             } else {
                 if has_images {
-                    tracing::warn!("image content parts in request ignored — vision not yet supported");
+                    tracing::warn!(
+                        "image content parts in request ignored — vision not yet supported"
+                    );
                 }
                 Ok(text)
             }

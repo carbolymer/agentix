@@ -1,0 +1,26 @@
+[package]
+name = "agentix-mcp-server"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[[bin]]
+name = "mcp-server"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+agentix-search = { path = "../agentix-search" }
+agentix-indexer = { path = "../agentix-indexer" }
+rmcp = { version = "0.1", features = ["server", "transport-io", "macros"] }
+sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "tls-rustls", "chrono"] }
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

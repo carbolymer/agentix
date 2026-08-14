@@ -3,12 +3,11 @@ use sqlx::PgPool;
 
 /// Delete all data for a single repo_path and remove it from repo_index.
 pub async fn prune_repo(pool: &PgPool, repo_path: &str, dry_run: bool) -> Result<()> {
-    let chunks: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM code_chunks WHERE repo_path = $1")
-            .bind(repo_path)
-            .fetch_one(pool)
-            .await
-            .unwrap_or(0);
+    let chunks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM code_chunks WHERE repo_path = $1")
+        .bind(repo_path)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
     let docs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM documents WHERE repo_path = $1")
         .bind(repo_path)
         .fetch_one(pool)
@@ -37,10 +36,11 @@ pub async fn prune_repo(pool: &PgPool, repo_path: &str, dry_run: bool) -> Result
 
 /// Prune all repos marked as dirty (local clones).
 pub async fn prune_dirty(pool: &PgPool, dry_run: bool) -> Result<()> {
-    let dirty: Vec<String> =
-        sqlx::query_scalar("SELECT repo_path FROM repo_index WHERE source_kind = 'local' ORDER BY repo_path")
-            .fetch_all(pool)
-            .await?;
+    let dirty: Vec<String> = sqlx::query_scalar(
+        "SELECT repo_path FROM repo_index WHERE source_kind = 'local' ORDER BY repo_path",
+    )
+    .fetch_all(pool)
+    .await?;
 
     if dirty.is_empty() {
         eprintln!("No local repos found.");

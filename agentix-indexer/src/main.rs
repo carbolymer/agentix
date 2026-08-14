@@ -1,20 +1,22 @@
-mod code;
-mod crates;
-mod docs;
-mod embed;
-mod git;
-mod github;
-mod hackage;
-mod prune;
-mod pypi;
-mod repo_index;
-mod symbols;
+mod ingest {
+    pub mod code;
+    pub mod crates;
+    pub mod docs;
+    pub mod embed;
+    pub mod git;
+    pub mod github;
+    pub mod hackage;
+    pub mod prune;
+    pub mod pypi;
+    pub mod repo_index;
+    pub mod symbols;
+}
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-use repo_index::{upsert_repo, RepoMeta};
+use ingest::repo_index::{upsert_repo, RepoMeta};
 
 #[derive(Parser)]
 #[command(
@@ -183,9 +185,11 @@ async fn main() -> Result<()> {
         } => {
             let canonical = repo_path.canonicalize()?;
             let repo_str = canonical.to_string_lossy().into_owned();
-            code::ingest_code(&pool, &repo_path, force, &pattern, None, project.as_deref()).await?;
+            ingest::code::ingest_code(&pool, &repo_path, force, &pattern, None, project.as_deref())
+                .await?;
             if !no_docs {
-                docs::ingest_docs(&pool, &repo_path, force, None, project.as_deref()).await?;
+                ingest::docs::ingest_docs(&pool, &repo_path, force, None, project.as_deref())
+                    .await?;
             }
             upsert_repo(
                 &pool,
@@ -206,14 +210,14 @@ async fn main() -> Result<()> {
             force,
             project,
         } => {
-            docs::ingest_docs(&pool, &repo_path, force, None, project.as_deref()).await?;
+            ingest::docs::ingest_docs(&pool, &repo_path, force, None, project.as_deref()).await?;
         }
         Commands::Github {
             repo,
             force,
             stream,
         } => {
-            github::ingest_github(&pool, &repo, force, &stream).await?;
+            ingest::github::ingest_github(&pool, &repo, force, &stream).await?;
         }
         Commands::Hackage {
             package,
@@ -221,7 +225,8 @@ async fn main() -> Result<()> {
             force,
             project,
         } => {
-            hackage::ingest_hackage(&pool, &package, &version, force, project.as_deref()).await?;
+            ingest::hackage::ingest_hackage(&pool, &package, &version, force, project.as_deref())
+                .await?;
         }
         Commands::Crate {
             package,
@@ -229,7 +234,8 @@ async fn main() -> Result<()> {
             force,
             project,
         } => {
-            crates::ingest_crate(&pool, &package, &version, force, project.as_deref()).await?;
+            ingest::crates::ingest_crate(&pool, &package, &version, force, project.as_deref())
+                .await?;
         }
         Commands::Pypi {
             package,
@@ -237,7 +243,7 @@ async fn main() -> Result<()> {
             force,
             project,
         } => {
-            pypi::ingest_pypi(&pool, &package, &version, force, project.as_deref()).await?;
+            ingest::pypi::ingest_pypi(&pool, &package, &version, force, project.as_deref()).await?;
         }
         Commands::Git {
             url,
@@ -248,7 +254,7 @@ async fn main() -> Result<()> {
             no_docs,
             project,
         } => {
-            git::ingest_git(
+            ingest::git::ingest_git(
                 &pool,
                 &url,
                 rev.as_deref(),
@@ -265,13 +271,13 @@ async fn main() -> Result<()> {
         }
         Commands::Prune { target, dry_run } => match target {
             PruneTarget::Local => {
-                prune::prune_dirty(&pool, dry_run).await?;
+                ingest::prune::prune_dirty(&pool, dry_run).await?;
             }
             PruneTarget::OldVersions { package } => {
-                prune::prune_old_versions(&pool, package.as_deref(), dry_run).await?;
+                ingest::prune::prune_old_versions(&pool, package.as_deref(), dry_run).await?;
             }
             PruneTarget::Repo { repo_path } => {
-                prune::prune_repo(&pool, &repo_path, dry_run).await?;
+                ingest::prune::prune_repo(&pool, &repo_path, dry_run).await?;
             }
         },
     }

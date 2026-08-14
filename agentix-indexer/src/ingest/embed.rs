@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -97,12 +97,14 @@ pub async fn ensure_embed_model() -> Result<()> {
     let needs_pull = match probe {
         Ok(r) if r.status().is_success() => return Ok(()), // already available
         Ok(r) if r.status().as_u16() == 404 => true,
-        Ok(_) => true,  // any other error — try pulling anyway
+        Ok(_) => true, // any other error — try pulling anyway
         Err(_) => return Err(anyhow!("Ollama unreachable at {host}")),
     };
 
     if needs_pull {
-        eprintln!("[agentic-nix] Embed model '{model}' not found locally — pulling from registry...");
+        eprintln!(
+            "[agentic-nix] Embed model '{model}' not found locally — pulling from registry..."
+        );
 
         // Stream the pull so we can log progress milestones.
         let mut resp = client()
@@ -149,12 +151,15 @@ pub async fn ensure_embed_model() -> Result<()> {
         .await
     {
         if let Ok(data) = resp.json::<serde_json::Value>().await {
-            let on_cpu = data["models"].as_array().map(|ms| {
-                ms.iter().any(|m| {
-                    m["size"].as_u64().unwrap_or(0) > 0
-                        && m["size_vram"].as_u64().unwrap_or(0) == 0
+            let on_cpu = data["models"]
+                .as_array()
+                .map(|ms| {
+                    ms.iter().any(|m| {
+                        m["size"].as_u64().unwrap_or(0) > 0
+                            && m["size_vram"].as_u64().unwrap_or(0) == 0
+                    })
                 })
-            }).unwrap_or(false);
+                .unwrap_or(false);
             if on_cpu {
                 eprintln!(
                     "WARNING: Ollama embed model is running on CPU (size_vram=0). \

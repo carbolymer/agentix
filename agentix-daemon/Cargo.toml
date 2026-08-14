@@ -9,8 +9,8 @@ name = "agentix-daemon"
 path = "src/main.rs"
 
 [features]
-# Pass through to agentix-infer — build with `--features cuda` for GPU inference
-cuda = ["agentix-infer/cuda"]
+# Pass through to agentix-llama — build with `--features cuda` for GPU inference
+cuda = ["agentix-llama/cuda"]
 
 [lints]
 workspace = true
@@ -18,7 +18,8 @@ workspace = true
 [dependencies]
 agentix-api = { path = "../agentix-api" }
 agentix-router = { path = "../agentix-router" }
-agentix-infer = { path = "../agentix-infer", features = ["llamacpp"] }
+agentix-infer = { path = "../agentix-infer" }
+agentix-llama = { path = "../agentix-llama" }
 axum = { version = "0.8", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.6", features = ["trace", "cors"] }

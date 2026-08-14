@@ -47,7 +47,10 @@ async fn main() -> Result<()> {
         .with_context(|| format!("binding socket {}", args.socket))?;
 
     if args.allowed_repos.is_empty() {
-        eprintln!("gh-jail-server: listening on {} (all repos allowed)", args.socket);
+        eprintln!(
+            "gh-jail-server: listening on {} (all repos allowed)",
+            args.socket
+        );
     } else {
         eprintln!(
             "gh-jail-server: listening on {} (allowed repos: {})",
@@ -78,7 +81,10 @@ async fn handle(
     let mut reader = BufReader::new(read_half);
 
     let mut line = String::new();
-    reader.read_line(&mut line).await.context("reading request")?;
+    reader
+        .read_line(&mut line)
+        .await
+        .context("reading request")?;
 
     let req: Request = serde_json::from_str(line.trim()).context("parsing request")?;
 
@@ -123,7 +129,11 @@ async fn run_gh(args: &[String]) -> Response {
 }
 
 /// Returns Ok(()) if the command is permitted, Err(reason) if it is blocked.
-fn check_allowed(args: &[String], write_mode: bool, allowed_repos: &[String]) -> Result<(), String> {
+fn check_allowed(
+    args: &[String],
+    write_mode: bool,
+    allowed_repos: &[String],
+) -> Result<(), String> {
     let sub = match args.first() {
         Some(s) => s.as_str(),
         None => return Err("no subcommand given".into()),
@@ -166,9 +176,7 @@ fn check_allowed(args: &[String], write_mode: bool, allowed_repos: &[String]) ->
     if sub == "api" {
         let method = find_flag(args, &["-X", "--method"]).unwrap_or("GET");
         if !method.eq_ignore_ascii_case("GET") && !write_mode {
-            return Err(format!(
-                "'api --method {method}' requires the --write flag"
-            ));
+            return Err(format!("'api --method {method}' requires the --write flag"));
         }
         // Check that any /repos/owner/repo/ path is in the allowed list.
         if let Some(repo) = api_path_repo(args) {

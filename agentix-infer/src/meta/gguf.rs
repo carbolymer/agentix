@@ -1,6 +1,5 @@
 use crate::{error::InferError, Capability};
-#[cfg(feature = "llamacpp")]
-use llama_cpp_2::gguf::GgufContext;
+use std::io::{BufReader, Read};
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -14,95 +13,116 @@ pub struct GgufMeta {
     pub quantization: Option<String>,
 }
 
-#[cfg(feature = "llamacpp")]
+// GGUF magic: "GGUF" in little-endian
+const GGUF_MAGIC: u32 = 0x4655_4747;
+
+// GGUF metadata value types
+const TYPE_UINT8: u32 = 0;
+const TYPE_INT8: u32 = 1;
+const TYPE_UINT16: u32 = 2;
+const TYPE_INT16: u32 = 3;
+const TYPE_UINT32: u32 = 4;
+const TYPE_INT32: u32 = 5;
+const TYPE_FLOAT32: u32 = 6;
+const TYPE_BOOL: u32 = 7;
+const TYPE_STRING: u32 = 8;
+const TYPE_ARRAY: u32 = 9;
+const TYPE_UINT64: u32 = 10;
+const TYPE_INT64: u32 = 11;
+const TYPE_FLOAT64: u32 = 12;
+
+/// Pure-Rust GGUF metadata parser. Reads only the keys needed for capability
+/// detection; skips all other values without loading tensor data.
 pub fn read_gguf_metadata(path: &Path) -> Result<GgufMeta, InferError> {
-    let gguf = GgufContext::from_file(path)
-        .ok_or_else(|| InferError::Backend(format!("failed to read GGUF: {}", path.display())))?;
+    let file = std::fs::File::open(path)
+        .map_err(|e| InferError::Backend(format!("cannot open GGUF: {e}")))?;
+    let mut r = BufReader::new(file);
 
-    // Architecture
-    let arch_idx = gguf.find_key("general.architecture");
-    let architecture = if arch_idx >= 0 {
-        gguf.val_str(arch_idx).unwrap_or("unknown").to_string()
-    } else {
-        "unknown".to_string()
-    };
+    let magic = read_u32(&mut r)?;
+    if magic != GGUF_MAGIC {
+        return Err(InferError::Backend("not a GGUF file".to_string()));
+    }
 
-    // Context length
-    let ctx_key = format!("{}.context_length", architecture);
-    let ctx_idx = gguf.find_key(&ctx_key);
-    let context_length = if ctx_idx >= 0 {
-        gguf.val_u32(ctx_idx)
-    } else {
-        0
-    };
+    let version = read_u32(&mut r)?;
+    if version != 2 && version != 3 {
+        return Err(InferError::Backend(format!(
+            "unsupported GGUF version: {version}"
+        )));
+    }
 
-    // Embedding dimension
-    let emb_key = format!("{}.embedding_length", architecture);
-    let emb_idx = gguf.find_key(&emb_key);
-    let embedding_length = if emb_idx >= 0 {
-        gguf.val_u32(emb_idx)
-    } else {
-        0
-    };
+    let _tensor_count = read_u64(&mut r)?;
+    let kv_count = read_u64(&mut r)?;
 
-    // Capability detection
+    let mut architecture = String::new();
+    let mut pooling_type: Option<u32> = None;
+    let mut has_chat_template = false;
+    let mut has_vision = false;
+    let mut context_length: u32 = 0;
+    let mut embedding_length: u32 = 0;
+
+    for _ in 0..kv_count {
+        let key = read_string(&mut r)?;
+        let value_type = read_u32(&mut r)?;
+
+        if key == "general.architecture" && value_type == TYPE_STRING {
+            architecture = read_string(&mut r)?;
+        } else if key == "tokenizer.chat_template" {
+            has_chat_template = value_type == TYPE_STRING;
+            skip_value(&mut r, value_type)?;
+        } else if key.ends_with(".pooling_type") && value_type == TYPE_UINT32 {
+            pooling_type = Some(read_u32(&mut r)?);
+        } else if (key.ends_with(".context_length") && key.starts_with(&architecture))
+            && value_type == TYPE_UINT32
+        {
+            context_length = read_u32(&mut r)?;
+        } else if (key.ends_with(".embedding_length") && key.starts_with(&architecture))
+            && value_type == TYPE_UINT32
+        {
+            embedding_length = read_u32(&mut r)?;
+        } else if (key.ends_with(".vision_encoder.image_size")
+            || key == "clip.vision_model.image_size"
+            || key == "vision_model.image_size")
+            && !has_vision
+        {
+            has_vision = true;
+            skip_value(&mut r, value_type)?;
+        } else {
+            skip_value(&mut r, value_type)?;
+        }
+    }
+
     let mut capabilities = Vec::new();
-
-    // Embedding: pooling_type present and non-zero
-    let pool_key = format!("{}.pooling_type", architecture);
-    let pool_idx = gguf.find_key(&pool_key);
-    if pool_idx >= 0 {
-        let pooling = gguf.val_u32(pool_idx);
-        if pooling != 0 {
+    if let Some(pt) = pooling_type {
+        if pt != 0 {
             capabilities.push(Capability::Embedding);
         }
     }
-
-    // Completion: chat template present
-    let tmpl_idx = gguf.find_key("tokenizer.chat_template");
-    if tmpl_idx >= 0 {
+    if has_chat_template {
         capabilities.push(Capability::Completion);
     }
-
-    // Vision: any vision encoder key
-    let vision_keys = [
-        format!("{}.vision_encoder.image_size", architecture),
-        "clip.vision_model.image_size".to_string(),
-        "vision_model.image_size".to_string(),
-    ];
-    for vkey in &vision_keys {
-        if gguf.find_key(vkey) >= 0 {
-            capabilities.push(Capability::Vision);
-            break;
-        }
+    if has_vision {
+        capabilities.push(Capability::Vision);
     }
 
-    // Fallback: if no capabilities detected, use name/architecture heuristics
     if capabilities.is_empty() {
-        let name_idx = gguf.find_key("general.name");
-        let general_name = if name_idx >= 0 {
-            gguf.val_str(name_idx).unwrap_or("").to_lowercase()
-        } else {
-            String::new()
-        };
-
-        // Architectures that are always embedding-only (no generative output)
+        let filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_lowercase();
         const EMBEDDING_ARCHS: &[&str] = &["bert", "nomic_bert", "roberta", "xlm_roberta"];
-        let arch_is_embedding = EMBEDDING_ARCHS.contains(&architecture.as_str());
-
-        if general_name.contains("embed") || arch_is_embedding {
+        if filename.contains("embed") || EMBEDDING_ARCHS.contains(&architecture.as_str()) {
             tracing::info!(
                 path = %path.display(),
                 architecture = %architecture,
-                name = %general_name,
-                "no pooling_type/chat_template found; name heuristic identifies embedding model"
+                "no pooling_type/chat_template; name/arch heuristic identifies embedding model"
             );
             capabilities.push(Capability::Embedding);
         } else {
             tracing::warn!(
                 path = %path.display(),
                 architecture = %architecture,
-                "no capability keys found in GGUF metadata; defaulting to Completion"
+                "no capability keys in GGUF; defaulting to Completion"
             );
             capabilities.push(Capability::Completion);
         }
@@ -118,11 +138,73 @@ pub fn read_gguf_metadata(path: &Path) -> Result<GgufMeta, InferError> {
     })
 }
 
-#[cfg(not(feature = "llamacpp"))]
-pub fn read_gguf_metadata(_path: &Path) -> Result<GgufMeta, InferError> {
-    Err(InferError::Backend(
-        "llamacpp feature not enabled".to_string(),
-    ))
+fn read_u8(r: &mut impl Read) -> Result<u8, InferError> {
+    let mut buf = [0u8; 1];
+    r.read_exact(&mut buf)
+        .map_err(|e| InferError::Backend(e.to_string()))?;
+    Ok(buf[0])
+}
+
+fn read_u16(r: &mut impl Read) -> Result<u16, InferError> {
+    let mut buf = [0u8; 2];
+    r.read_exact(&mut buf)
+        .map_err(|e| InferError::Backend(e.to_string()))?;
+    Ok(u16::from_le_bytes(buf))
+}
+
+fn read_u32(r: &mut impl Read) -> Result<u32, InferError> {
+    let mut buf = [0u8; 4];
+    r.read_exact(&mut buf)
+        .map_err(|e| InferError::Backend(e.to_string()))?;
+    Ok(u32::from_le_bytes(buf))
+}
+
+fn read_u64(r: &mut impl Read) -> Result<u64, InferError> {
+    let mut buf = [0u8; 8];
+    r.read_exact(&mut buf)
+        .map_err(|e| InferError::Backend(e.to_string()))?;
+    Ok(u64::from_le_bytes(buf))
+}
+
+fn read_string(r: &mut impl Read) -> Result<String, InferError> {
+    let len = read_u64(r)? as usize;
+    let mut buf = vec![0u8; len];
+    r.read_exact(&mut buf)
+        .map_err(|e| InferError::Backend(e.to_string()))?;
+    String::from_utf8(buf).map_err(|e| InferError::Backend(format!("GGUF string UTF-8: {e}")))
+}
+
+fn skip_value(r: &mut impl Read, typ: u32) -> Result<(), InferError> {
+    match typ {
+        TYPE_UINT8 | TYPE_INT8 | TYPE_BOOL => {
+            read_u8(r)?;
+        }
+        TYPE_UINT16 | TYPE_INT16 => {
+            read_u16(r)?;
+        }
+        TYPE_UINT32 | TYPE_INT32 | TYPE_FLOAT32 => {
+            read_u32(r)?;
+        }
+        TYPE_UINT64 | TYPE_INT64 | TYPE_FLOAT64 => {
+            read_u64(r)?;
+        }
+        TYPE_STRING => {
+            read_string(r)?;
+        }
+        TYPE_ARRAY => {
+            let elem_type = read_u32(r)?;
+            let count = read_u64(r)?;
+            for _ in 0..count {
+                skip_value(r, elem_type)?;
+            }
+        }
+        _ => {
+            return Err(InferError::Backend(format!(
+                "unknown GGUF value type: {typ}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -132,7 +214,6 @@ mod tests {
 
     #[test]
     fn empty_capabilities_fallback_completion() {
-        // When no GGUF keys match and name has no embed hint, fallback is Completion.
         let caps: Vec<Capability> = vec![];
         let general_name = "mistral-7b-instruct";
         let result = if caps.is_empty() && !general_name.contains("embed") {
@@ -145,7 +226,6 @@ mod tests {
 
     #[test]
     fn empty_capabilities_fallback_embedding_by_name() {
-        // When no GGUF keys match but name contains "embed", fallback is Embedding.
         let caps: Vec<Capability> = vec![];
         let general_name = "jinaai/test-qwen25-coder-jina-code-embeddings-1.5b";
         let result: Vec<Capability> = if caps.is_empty() && general_name.contains("embed") {
@@ -160,8 +240,6 @@ mod tests {
 
     #[test]
     fn embedding_capability_requires_nonzero_pooling() {
-        // Capability::Embedding is only added when pooling_type != 0
-        // This mirrors the logic in read_gguf_metadata
         let pooling_type: u32 = 0;
         let mut caps = Vec::new();
         if pooling_type != 0 {
@@ -169,7 +247,7 @@ mod tests {
         }
         assert!(caps.is_empty());
 
-        let pooling_type_mean: u32 = 1; // Mean pooling
+        let pooling_type_mean: u32 = 1;
         let mut caps2 = Vec::new();
         if pooling_type_mean != 0 {
             caps2.push(Capability::Embedding);

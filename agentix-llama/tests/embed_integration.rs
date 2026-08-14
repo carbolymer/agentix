@@ -8,7 +8,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use agentix_infer::{backend::llamacpp::LlamaCppBackend, InferConfig, InferEngine};
+use agentix_infer::{InferConfig, InferEngine};
+use agentix_llama::LlamaCppBackend;
 use std::sync::Arc;
 
 #[tokio::test]

@@ -118,11 +118,7 @@ impl InferEngine {
 
     /// Return `CapabilityMissing` if the model's manifest does not include `cap`.
     /// Returns `Ok(())` if the model is unknown (load will fail later with ModelNotFound).
-    fn check_capability(
-        &self,
-        model: &str,
-        cap: crate::Capability,
-    ) -> Result<(), InferError> {
+    fn check_capability(&self, model: &str, cap: crate::Capability) -> Result<(), InferError> {
         if let Some(info) = self.store().info(model) {
             if !info.capabilities.contains(&cap) {
                 return Err(InferError::CapabilityMissing(model.to_string(), cap));

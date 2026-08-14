@@ -41,7 +41,3 @@ pub trait LoadedModel: Send + Sync {
     /// Bytes of GPU/CPU memory held by this instance (used by pool for eviction).
     fn vram_bytes(&self) -> u64;
 }
-
-// Re-export backend implementations
-#[cfg(feature = "llamacpp")]
-pub mod llamacpp;
