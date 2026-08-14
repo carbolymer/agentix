@@ -16,12 +16,15 @@ use std::path::PathBuf;
 pub enum ModelFormat {
     Gguf,
     Safetensors,
+    /// Legacy ggml binary format used by whisper.cpp `ggml-*.bin` files.
+    WhisperBin,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BackendHint {
     LlamaCpp,
     Candle,
+    Whisper,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -29,6 +32,7 @@ pub enum Capability {
     Completion,
     Embedding,
     Vision,
+    Transcription,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

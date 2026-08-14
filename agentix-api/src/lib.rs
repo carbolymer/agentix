@@ -30,6 +30,11 @@ pub struct EmbeddingRequest {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TranscriptionResponse {
+    pub text: String,
+}
+
 /// The only valid path to a cloud backend (Principle II).
 ///
 /// All three fields are mandatory. A cloud call that bypasses this type and

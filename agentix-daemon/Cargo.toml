@@ -9,7 +9,6 @@ name = "agentix-daemon"
 path = "src/main.rs"
 
 [features]
-# Pass through to agentix-llama — build with `--features cuda` for GPU inference
 cuda = ["agentix-llama/cuda"]
 
 [lints]

@@ -5,6 +5,7 @@ Auto-generated from feature plans and updated manually. Last updated: 2026-08-13
 ## Active Technologies
 - Rust edition 2021, Rust 1.80+ (via fenix stable toolchain in Nix)
 - llama-cpp-2 (C++, isolated in `agentix-llama`)
+- whisper-rs / whisper.cpp (C++, isolated in `agentix-whisper`); audio decoding via symphonia + rubato
 - tree-sitter-* (C++, in `agentix-indexer`)
 - fastembed/onnxruntime (C++, in `agentix-search`)
 - tokio, axum, sqlx, rmcp, ratatui
@@ -18,7 +19,8 @@ agentix-api/         # OpenAI-compatible request/response types (no deps)
 agentix-router/      # Backend-selection routing (RouteTarget enum); NO C++ deps
 agentix-infer/       # Pure-Rust inference traits, types, and ModelStore
 agentix-llama/       # llama-cpp-2 GGUF backend (C++; isolated here)
-agentix-daemon/      # HTTP gateway (Axum); assembles api + router + infer + llama
+agentix-whisper/     # whisper.cpp speech-to-text backend (C++; isolated here)
+agentix-daemon/      # HTTP gateway (Axum); assembles api + router + infer + llama + whisper
 agentix-harness/     # Agent loop library (state machine, tool dispatch)
 agentix-ax/          # TUI agent binary (Ratatui, links harness)
 agentix-search/      # PostgreSQL search library (BM25 + vector + reranking)
@@ -28,9 +30,10 @@ src/                 # Jail binaries (claude-jail, ax-jail, gh-jail-*)
 ```
 
 Dependency flow: `agentix-api` → `agentix-router` → `agentix-daemon`. C++ is isolated:
-`agentix-llama` (llama-cpp-2), `agentix-indexer` (tree-sitter), `agentix-search` (fastembed).
+`agentix-llama` (llama-cpp-2), `agentix-whisper` (whisper.cpp + symphonia), `agentix-indexer` (tree-sitter), `agentix-search` (fastembed).
 Neither `agentix-router` nor `agentix-infer` have C++ transitive deps. No circular deps.
-The daemon is the only crate that binds a port.
+The daemon is the only crate that binds a port. The daemon's `build.rs` adds
+`--allow-multiple-definition` because llama.cpp and whisper.cpp both bundle ggml.
 
 ## Commands
 
@@ -83,3 +86,4 @@ Key constraints:
 
 ## Recent Changes
 - 007-cargo-cleanup: Decomposed workspace — llama-cpp-2 isolated in `agentix-llama`; new crates: `agentix-search`, `agentix-indexer`, `agentix-mcp-server`; root crate renamed to `agentix-jails`; pure-Rust GGUF metadata parser added to `agentix-infer`
+- 006-whisper-integration: Added `agentix-whisper` crate (whisper.cpp via whisper-rs; audio decoding via symphonia+rubato); extended `agentix-infer` with `Capability::Transcription`, `BackendHint::Whisper`, `ModelFormat::WhisperBin`, `InferEngine::transcribe_pcm()`, `InferEngine::warmup()`; added `/v1/audio/transcriptions` endpoint; NixOS `whisperAlwaysOn` option; daemon build.rs with `--allow-multiple-definition` for ggml symbol collision

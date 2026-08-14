@@ -3,6 +3,7 @@ mod health;
 mod infer_handler;
 mod ollama_manage;
 mod openai_proxy;
+mod transcription_handler;
 
 use crate::config::Config;
 use agentix_infer::InferEngine;
@@ -52,6 +53,11 @@ pub fn router(
         .route("/v1/messages", post(messages_handler))
         // Ollama-compatible embedding endpoint (used by ingest/mcp-server)
         .route("/api/embed", post(ollama_embed_handler))
+        // Audio transcription (OpenAI-compatible)
+        .route(
+            "/v1/audio/transcriptions",
+            post(transcription_handler::handler),
+        )
         // Ollama-compatible model management endpoints
         .route("/api/pull", post(ollama_manage::pull_handler))
         .route("/api/delete", delete(ollama_manage::delete_handler))

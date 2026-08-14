@@ -110,6 +110,20 @@ impl InferEngine {
         guard.tokenize(text).await
     }
 
+    /// Transcribe 16 kHz mono f32 PCM audio to text using the specified model.
+    pub async fn transcribe_pcm(&self, model: &str, pcm: &[f32]) -> Result<String, InferError> {
+        self.check_capability(model, crate::Capability::Transcription)?;
+        let guard = self.acquire(model).await?;
+        guard.transcribe(pcm).await
+    }
+
+    /// Pre-load a model into the pool so the first inference request is fast.
+    /// The guard is dropped immediately, returning the model to the idle pool warm.
+    pub async fn warmup(&self, model: &str) -> Result<(), InferError> {
+        let _guard = self.acquire(model).await?;
+        Ok(())
+    }
+
     // ── Internal ─────────────────────────────────────────────────────────────
 
     fn store(&self) -> ModelStore {
@@ -173,9 +187,17 @@ impl InferEngine {
                 .backends
                 .read()
                 .map_err(|_| InferError::Backend("backends lock poisoned".to_string()))?;
+            // Select by BackendHint name first — both LlamaCpp and Whisper accept GGUF,
+            // so format alone is ambiguous.
+            let hint_name = match info.backend {
+                crate::BackendHint::LlamaCpp => "llamacpp",
+                crate::BackendHint::Whisper => "whisper",
+                crate::BackendHint::Candle => "candle",
+            };
             backends
                 .iter()
-                .find(|b| b.supports_format(info.format))
+                .find(|b| b.name() == hint_name)
+                .or_else(|| backends.iter().find(|b| b.supports_format(info.format)))
                 .cloned()
                 .ok_or(InferError::NoBackend(info.format))?
         };

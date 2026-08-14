@@ -40,4 +40,13 @@ pub trait LoadedModel: Send + Sync {
 
     /// Bytes of GPU/CPU memory held by this instance (used by pool for eviction).
     fn vram_bytes(&self) -> u64;
+
+    /// Transcribe 16 kHz mono f32 PCM audio to text.
+    /// Returns `InferError::CapabilityMissing` for non-transcription models.
+    async fn transcribe(&self, _pcm: &[f32]) -> Result<String, InferError> {
+        Err(InferError::CapabilityMissing(
+            "model".to_string(),
+            crate::Capability::Transcription,
+        ))
+    }
 }

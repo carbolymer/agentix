@@ -36,5 +36,15 @@ pub fn detect_capabilities(path: &Path, format: ModelFormat) -> Result<DetectedM
                 parameter_count: 0,
             })
         }
+        ModelFormat::WhisperBin => {
+            // Legacy ggml binary format — skip file parsing; whisper-rs loads it natively.
+            Ok(DetectedMeta {
+                architecture: "whisper".to_string(),
+                context_length: 0,
+                embedding_length: 0,
+                capabilities: vec![Capability::Transcription],
+                parameter_count: 0,
+            })
+        }
     }
 }

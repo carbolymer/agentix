@@ -38,11 +38,7 @@ impl ModelStore {
 
         let blob_path = blob::blob_path(&self.models_dir, &hash);
         let detected = meta::detect_capabilities(&blob_path, format)?;
-
-        let backend = match format {
-            ModelFormat::Gguf => BackendHint::LlamaCpp,
-            ModelFormat::Safetensors => BackendHint::Candle,
-        };
+        let backend = select_backend(format, &detected);
 
         // Use the original model ref as the canonical name so that
         // store.info(model_ref) finds the manifest after a pull.
@@ -68,11 +64,7 @@ impl ModelStore {
 
         let blob_path = blob::blob_path(&self.models_dir, &hash);
         let detected = meta::detect_capabilities(&blob_path, format)?;
-
-        let backend = match format {
-            ModelFormat::Gguf => BackendHint::LlamaCpp,
-            ModelFormat::Safetensors => BackendHint::Candle,
-        };
+        let backend = select_backend(format, &detected);
 
         // Use the filename as the canonical name so that the manifest path stays
         // within the store (absolute path_str in PathBuf::join would replace the base).
@@ -279,10 +271,25 @@ impl ModelStore {
 fn detect_format(filename: &str) -> ModelFormat {
     if filename.ends_with(".gguf") {
         ModelFormat::Gguf
-    } else if filename.ends_with(".safetensors") || filename.ends_with(".bin") {
+    } else if filename.ends_with(".safetensors") {
         ModelFormat::Safetensors
+    } else if filename.ends_with(".bin") {
+        // whisper.cpp legacy ggml binary format (e.g. ggml-tiny.en.bin)
+        ModelFormat::WhisperBin
     } else {
         ModelFormat::Gguf // default
+    }
+}
+
+fn select_backend(format: ModelFormat, meta: &meta::DetectedMeta) -> BackendHint {
+    // Whisper capability overrides format-based default — both LlamaCpp and Whisper
+    // accept GGUF, so we must disambiguate by capability rather than format.
+    if meta.capabilities.contains(&crate::Capability::Transcription) {
+        return BackendHint::Whisper;
+    }
+    match format {
+        ModelFormat::Gguf | ModelFormat::WhisperBin => BackendHint::LlamaCpp,
+        ModelFormat::Safetensors => BackendHint::Candle,
     }
 }
 

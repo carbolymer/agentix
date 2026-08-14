@@ -1,0 +1,36 @@
+[package]
+name = "agentix-whisper"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Whisper speech-to-text backend for agentix"
+
+build = "build.rs"
+
+[[bin]]
+name = "agentix-whisper"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[features]
+cuda = []
+
+[dependencies]
+agentix-api = { path = "../agentix-api" }
+agentix-infer = { path = "../agentix-infer" }
+whisper-rs = "0.14"
+symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4", "wav", "flac", "ogg", "vorbis"] }
+rubato = "0.15"
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+tracing = "0.1"
+# Binary-only deps (HTTP server, logging)
+axum = { version = "0.8", features = ["json", "multipart"] }
+anyhow = "1"
+serde_json = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"

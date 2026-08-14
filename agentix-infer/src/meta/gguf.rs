@@ -1,4 +1,4 @@
-use crate::{error::InferError, Capability};
+use crate::{error::InferError, BackendHint, Capability};
 use std::io::{BufReader, Read};
 use std::path::Path;
 
@@ -11,6 +11,9 @@ pub struct GgufMeta {
     pub parameter_count: u64,
     #[allow(dead_code)]
     pub quantization: Option<String>,
+    /// Overrides the default backend selection when the architecture mandates it.
+    /// `None` means use the format-based default (GGUF → LlamaCpp).
+    pub backend_hint: Option<BackendHint>,
 }
 
 // GGUF magic: "GGUF" in little-endian
@@ -91,6 +94,20 @@ pub fn read_gguf_metadata(path: &Path) -> Result<GgufMeta, InferError> {
         }
     }
 
+    // Whisper GGUFs have no pooling_type, chat_template, or vision keys and would
+    // fall through to the heuristic fallback and be misclassified as Completion models.
+    if architecture == "whisper" {
+        return Ok(GgufMeta {
+            architecture,
+            context_length: 0,
+            embedding_length: 0,
+            capabilities: vec![Capability::Transcription],
+            parameter_count: 0,
+            quantization: None,
+            backend_hint: Some(BackendHint::Whisper),
+        });
+    }
+
     let mut capabilities = Vec::new();
     if let Some(pt) = pooling_type {
         if pt != 0 {
@@ -135,6 +152,7 @@ pub fn read_gguf_metadata(path: &Path) -> Result<GgufMeta, InferError> {
         capabilities,
         parameter_count: 0,
         quantization: None,
+        backend_hint: None,
     })
 }
 
@@ -211,6 +229,24 @@ fn skip_value(r: &mut impl Read, typ: u32) -> Result<(), InferError> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn whisper_architecture_yields_transcription_and_whisper_hint() {
+        let architecture = "whisper";
+        let (caps, hint): (Vec<Capability>, Option<BackendHint>) = if architecture == "whisper" {
+            (vec![Capability::Transcription], Some(BackendHint::Whisper))
+        } else {
+            (vec![], None)
+        };
+        assert_eq!(caps, vec![Capability::Transcription]);
+        assert_eq!(hint, Some(BackendHint::Whisper));
+    }
+
+    #[test]
+    fn non_whisper_architecture_does_not_short_circuit() {
+        let architecture = "llama";
+        assert!(architecture != "whisper");
+    }
 
     #[test]
     fn empty_capabilities_fallback_completion() {

@@ -34,6 +34,7 @@
             ../agentix-search/Cargo.toml
             ../agentix-indexer/Cargo.toml
             ../agentix-llama/Cargo.toml
+            ../agentix-whisper/Cargo.toml
             ../agentix-mcp-server/Cargo.toml
           ]
           ++ lib.optional (lib.pathExists ../Cargo.lock) ../Cargo.lock
@@ -69,6 +70,9 @@
         cp ${stubMain} $out/agentix-indexer/src/main.rs
         mkdir -p $out/agentix-llama/src
         cp ${stubLib} $out/agentix-llama/src/lib.rs
+        mkdir -p $out/agentix-whisper/src
+        cp ${stubLib} $out/agentix-whisper/src/lib.rs
+        cp ${stubMain} $out/agentix-whisper/src/main.rs
         mkdir -p $out/agentix-mcp-server/src
         cp ${stubMain} $out/agentix-mcp-server/src/main.rs
       '';
@@ -89,6 +93,12 @@
     };
 
     cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+
+    # Pinned whisper.cpp tiny English model (~75 MB) for whisper integration tests.
+    agentixTestWhisperModel = pkgs.fetchurl {
+      url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin";
+      sha256 = "07qbja4m5isssw42prv227gbyrf3nsjms6h8rlyrkpbgd3w4q7lj";
+    };
 
     # CUDA packages for agentix-daemon llama-cpp build
     cudaPackages = pkgs.cudaPackages_12;
@@ -146,6 +156,7 @@
           ../agentix-search
           ../agentix-indexer
           ../agentix-llama
+          ../agentix-whisper
           ../agentix-mcp-server
         ]
         ++ lib.optional (lib.pathExists ../Cargo.lock) ../Cargo.lock
@@ -157,10 +168,19 @@
       // {
         src = agentixSrc;
         cargoArtifacts = if withCuda then cudaCargoArtifacts.value else cargoArtifacts;
-        cargoExtraArgs = "--package agentix-daemon" + lib.optionalString withCuda " --features cuda";
+        cargoExtraArgs =
+          "--package agentix-daemon"
+          + lib.optionalString withCuda " --features cuda";
         # libcuda.so.1 is the NVIDIA driver API — present on the host at
         # runtime but never in the Nix store at build time.
         autoPatchelfIgnoreMissingDeps = lib.optional withCuda "libcuda.so.1";
+      });
+
+    agentixWhisperPkg = craneLib.buildPackage (commonArgs
+      // {
+        src = agentixSrc;
+        inherit cargoArtifacts;
+        cargoExtraArgs = "--package agentix-whisper";
       });
 
     axPkg = craneLib.buildPackage (commonArgs
@@ -208,6 +228,7 @@
               ../agentix-search/Cargo.toml
               ../agentix-indexer/Cargo.toml
               ../agentix-llama/Cargo.toml
+              ../agentix-whisper/Cargo.toml
               ../agentix-mcp-server/Cargo.toml
               keepFileset
             ]
@@ -239,6 +260,9 @@
           cp ${stubMain} $out/agentix-indexer/src/main.rs
           mkdir -p $out/agentix-llama/src
           cp ${stubLib} $out/agentix-llama/src/lib.rs
+          mkdir -p $out/agentix-whisper/src
+          cp ${stubLib} $out/agentix-whisper/src/lib.rs
+          cp ${stubMain} $out/agentix-whisper/src/main.rs
           mkdir -p $out/agentix-mcp-server/src
           cp ${stubMain} $out/agentix-mcp-server/src/main.rs
           ${lib.concatMapStringsSep "\n" (p: ''
@@ -422,6 +446,8 @@
       ];
     };
   in {
+    packages.agentix-whisper = agentixWhisperPkg;
+
     packages.agentix-mcp-server = agentixMcpServerPkg;
 
     packages.agentix-indexer = agentixIndexerPkg;

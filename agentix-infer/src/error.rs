@@ -24,6 +24,9 @@ pub enum InferError {
     #[error("VRAM exhausted: cannot load {model} ({required_bytes} bytes required)")]
     VramExhausted { model: String, required_bytes: u64 },
 
+    #[error("transcription error: {0}")]
+    Transcription(String),
+
     #[error("backend error: {0}")]
     Backend(String),
 

@@ -30,6 +30,7 @@ pub struct Config {
     pub openrouter_api_key: Option<String>,
     pub anthropic_base_url: Option<String>,
     pub openai_base_url: Option<String>,
+
 }
 
 fn default_gateway_host() -> String {

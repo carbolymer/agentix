@@ -1,5 +1,5 @@
 [workspace]
-members = ["agentix-api", "agentix-router", "agentix-daemon", "agentix-harness", "agentix-ax", "agentix-infer", "agentix-search", "agentix-indexer", "agentix-llama", "agentix-mcp-server"]
+members = ["agentix-api", "agentix-router", "agentix-daemon", "agentix-harness", "agentix-ax", "agentix-infer", "agentix-search", "agentix-indexer", "agentix-llama", "agentix-whisper", "agentix-mcp-server"]
 resolver = "2"
 
 [workspace.lints.clippy]

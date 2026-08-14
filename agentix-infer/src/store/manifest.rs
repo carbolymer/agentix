@@ -92,6 +92,7 @@ pub fn manifest_to_model_info(name: String, manifest: &Manifest) -> ModelInfo {
         .map(|e| match e.backend {
             BackendHint::LlamaCpp => ModelFormat::Gguf,
             BackendHint::Candle => ModelFormat::Safetensors,
+            BackendHint::Whisper => ModelFormat::WhisperBin,
         })
         .unwrap_or(ModelFormat::Gguf);
 
