@@ -1,37 +1,34 @@
 mod anthropic;
 mod health;
-mod infer_handler;
 mod ollama_manage;
 mod openai_proxy;
+mod proxy;
 mod transcription_handler;
 
 use crate::config::Config;
-use agentix_infer::InferEngine;
 use agentix_router::{RouteTarget, Router as ModelRouter};
 use anyhow::Context as _;
 use axum::{
+    body::Body,
     extract::State,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
     Router,
 };
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 use tower_http::trace::TraceLayer;
 
 #[derive(Clone)]
 pub struct AppState {
     pub model_router: Arc<ModelRouter>,
-    pub infer: InferEngine,
     pub config: Config,
     pub http: reqwest::Client,
+    pub llama_socket: PathBuf,
+    pub whisper_socket: PathBuf,
 }
 
-pub fn router(
-    model_router: Arc<ModelRouter>,
-    infer: InferEngine,
-    config: Config,
-) -> anyhow::Result<Router> {
+pub fn router(model_router: Arc<ModelRouter>, config: Config) -> anyhow::Result<Router> {
     let http = reqwest::Client::builder()
         .user_agent("agentix-daemon/0.1")
         .build()
@@ -39,7 +36,8 @@ pub fn router(
 
     let state = AppState {
         model_router,
-        infer,
+        llama_socket: config.llama_socket.clone(),
+        whisper_socket: config.whisper_socket.clone(),
         config,
         http,
     };
@@ -53,12 +51,12 @@ pub fn router(
         .route("/v1/messages", post(messages_handler))
         // Ollama-compatible embedding endpoint (used by ingest/mcp-server)
         .route("/api/embed", post(ollama_embed_handler))
-        // Audio transcription (OpenAI-compatible)
+        // Audio transcription (OpenAI-compatible) — proxied to agentix-whisper
         .route(
             "/v1/audio/transcriptions",
             post(transcription_handler::handler),
         )
-        // Ollama-compatible model management endpoints
+        // Ollama-compatible model management endpoints — proxied to agentix-llama
         .route("/api/pull", post(ollama_manage::pull_handler))
         .route("/api/delete", delete(ollama_manage::delete_handler))
         .route("/api/tags", get(ollama_manage::tags_handler))
@@ -79,57 +77,50 @@ async fn chat_completions_handler(
         }
     };
 
-    // Check local store before consulting the router: HuggingFace model names contain '/'
-    // (e.g. "org/repo:tag") which the router's provider/model heuristic would wrongly send
-    // to OpenRouter. A local hit always wins.
-    let local_resolved = resolve_local_model(&state, &req.model).await;
-
-    let target = if local_resolved.is_some() {
-        RouteTarget::Local
-    } else {
-        state.model_router.route(&req.model)
-    };
+    let target = state.model_router.route(&req.model);
     tracing::debug!(model = %req.model, target = ?target, "routing chat completion");
 
     match target {
         RouteTarget::Anthropic => anthropic::proxy_chat(&state, headers, body).await,
         RouteTarget::OpenAI => openai_proxy::proxy_chat(&state, headers, body).await,
         RouteTarget::OpenRouter => openai_proxy::proxy_openrouter(&state, headers, body).await,
-        RouteTarget::Local => match local_resolved {
-            Some(resolved) => infer_handler::complete(&state, &req, &resolved).await,
-            None => (
-                StatusCode::NOT_FOUND,
-                format!(
-                    "model '{}' not found in InferEngine — pull it first with POST /api/pull",
-                    req.model
-                ),
+        RouteTarget::Local => {
+            proxy::forward(
+                &state.llama_socket,
+                axum::http::Method::POST,
+                "/v1/chat/completions",
+                headers,
+                Body::from(body),
             )
-                .into_response(),
-        },
+            .await
+        }
     }
 }
 
 async fn embeddings_handler(
     State(state): State<AppState>,
-    _headers: HeaderMap,
+    headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
     let model = serde_json::from_slice::<serde_json::Value>(&body)
         .ok()
         .and_then(|v| v["model"].as_str().map(str::to_string))
         .unwrap_or_default();
+    tracing::debug!(model = %model, "embeddings request");
 
-    tracing::info!(model = %model, "embeddings request");
+    // Try the local llama backend first; fall back to Ollama if unavailable
+    let resp = proxy::forward(
+        &state.llama_socket,
+        axum::http::Method::POST,
+        "/v1/embeddings",
+        headers.clone(),
+        Body::from(body.clone()),
+    )
+    .await;
 
-    // Try the in-process InferEngine first
-    let resp = infer_handler::embeddings(&state, body.clone()).await;
-
-    tracing::info!(model = %model, status = %resp.status(), "infer engine response");
-
-    // If the model isn't in the local store, fall back to Ollama
-    if resp.status() == StatusCode::NOT_FOUND {
+    if resp.status() == StatusCode::SERVICE_UNAVAILABLE {
         let url = format!("{}/v1/embeddings", state.config.ollama_base_url);
-        tracing::info!(model = %model, ollama_url = %url, "falling back to Ollama proxy");
+        tracing::info!(model = %model, ollama_url = %url, "llama socket unavailable, falling back to Ollama");
         return match state
             .http
             .post(&url)
@@ -150,10 +141,21 @@ async fn embeddings_handler(
     resp
 }
 
-async fn ollama_embed_handler(State(state): State<AppState>, body: axum::body::Bytes) -> Response {
-    let resp = infer_handler::ollama_embed(&state, body.clone()).await;
-    if resp.status() == StatusCode::NOT_FOUND {
-        // Fall back to Ollama's /api/embed
+async fn ollama_embed_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let resp = proxy::forward(
+        &state.llama_socket,
+        axum::http::Method::POST,
+        "/api/embed",
+        headers,
+        Body::from(body.clone()),
+    )
+    .await;
+
+    if resp.status() == StatusCode::SERVICE_UNAVAILABLE {
         let url = format!("{}/api/embed", state.config.ollama_base_url);
         return match state
             .http
@@ -181,13 +183,25 @@ async fn messages_handler(
 async fn models_handler(State(state): State<AppState>) -> impl IntoResponse {
     let mut models = vec![];
 
-    // Local models from InferEngine
-    for m in state.infer.list().await {
-        models.push(serde_json::json!({
-            "id": m.name,
-            "object": "model",
-            "owned_by": "local",
-        }));
+    // Ask the llama backend for its local models (best-effort)
+    let llama_resp = proxy::forward(
+        &state.llama_socket,
+        axum::http::Method::GET,
+        "/v1/models",
+        HeaderMap::new(),
+        Body::empty(),
+    )
+    .await;
+
+    if llama_resp.status().is_success() {
+        let body_bytes = axum::body::to_bytes(llama_resp.into_body(), 1 << 20).await;
+        if let Ok(bytes) = body_bytes {
+            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                if let Some(data) = val["data"].as_array() {
+                    models.extend_from_slice(data);
+                }
+            }
+        }
     }
 
     if state.config.anthropic_api_key.is_some() {
@@ -208,50 +222,15 @@ async fn models_handler(State(state): State<AppState>) -> impl IntoResponse {
         );
     }
 
-    // Also check Ollama for any additional local models
+    // Also check Ollama for any additional models
     let ollama_url = format!("{}/v1/models", state.config.ollama_base_url);
     if let Ok(resp) = state.http.get(&ollama_url).send().await {
         if let Ok(body) = resp.json::<serde_json::Value>().await {
             if let Some(data) = body["data"].as_array() {
-                for m in data {
-                    models.push(m.clone());
-                }
+                models.extend_from_slice(data);
             }
         }
     }
 
     axum::Json(serde_json::json!({ "object": "list", "data": models }))
-}
-
-/// Find a model in the InferEngine by the name a client might request.
-/// Tries exact match first, then fuzzy suffix/alias matching so that e.g.
-/// "deepseek-r1:7b" resolves to "registry.ollama.ai/library/deepseek-r1/7b".
-/// Returns the canonical store name, or None if the model isn't local.
-async fn resolve_local_model(state: &AppState, requested: &str) -> Option<String> {
-    // 1. Exact match
-    if state.infer.info(requested).is_some() {
-        return Some(requested.to_string());
-    }
-
-    // 2. Scan all loaded models for a suffix/alias match
-    let all = state.infer.list().await;
-
-    // Normalize the requested name: "deepseek-r1:7b" → "deepseek-r1/7b"
-    let normalized = requested.replace(':', "/");
-
-    for info in &all {
-        let stored = &info.name;
-        // Suffix match: stored ends with the normalized requested name
-        if stored.ends_with(&normalized) || stored.ends_with(requested) {
-            return Some(stored.clone());
-        }
-        // Also match the short name after the last slash
-        if let Some(short) = stored.rsplit('/').next() {
-            if short == requested || short == normalized {
-                return Some(stored.clone());
-            }
-        }
-    }
-
-    None
 }

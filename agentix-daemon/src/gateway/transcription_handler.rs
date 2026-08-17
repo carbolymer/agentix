@@ -1,15 +1,22 @@
-//! Placeholder for POST /v1/audio/transcriptions.
-//!
-//! The real implementation lives in agentix-whisper (a separate process).
-//! This endpoint will proxy to agentix-whisper's Unix socket once
-//! spec 010-socket-backends is implemented.
+use super::{proxy, AppState};
+use axum::{
+    body::Body,
+    extract::State,
+    http::HeaderMap,
+    response::Response,
+};
 
-use axum::{http::StatusCode, response::{IntoResponse, Response}};
-
-pub async fn handler() -> Response {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        "audio transcription is served by agentix-whisper — socket proxy not yet wired (see spec 010-socket-backends)",
+pub async fn handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    proxy::forward(
+        &state.whisper_socket,
+        axum::http::Method::POST,
+        "/v1/audio/transcriptions",
+        headers,
+        Body::from(body),
     )
-        .into_response()
+    .await
 }

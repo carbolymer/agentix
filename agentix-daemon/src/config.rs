@@ -1,27 +1,12 @@
-use serde::Deserialize;
 use std::path::PathBuf;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct Config {
-    #[serde(default = "default_gateway_host")]
     pub gateway_host: String,
-
-    #[serde(default = "default_gateway_port")]
     pub gateway_port: u16,
-
-    #[serde(default = "default_ollama_base_url")]
     pub ollama_base_url: String,
-
-    #[serde(default = "default_models_dir")]
-    pub models_dir: PathBuf,
-
-    pub vram_limit_bytes: Option<u64>,
-
-    #[serde(default = "default_max_loaded_models")]
-    pub max_loaded_models: usize,
-
-    #[serde(default = "default_max_ctx")]
-    pub max_ctx: u32,
+    pub llama_socket: PathBuf,
+    pub whisper_socket: PathBuf,
 
     #[allow(dead_code)] // reserved for future gateway auth
     pub agentix_api_key: Option<String>,
@@ -30,72 +15,25 @@ pub struct Config {
     pub openrouter_api_key: Option<String>,
     pub anthropic_base_url: Option<String>,
     pub openai_base_url: Option<String>,
-
-}
-
-fn default_gateway_host() -> String {
-    "0.0.0.0".into()
-}
-
-fn default_gateway_port() -> u16 {
-    11434
-}
-
-fn default_ollama_base_url() -> String {
-    "http://localhost:11434".into()
-}
-
-fn default_models_dir() -> PathBuf {
-    PathBuf::from("/var/lib/agentix/models")
-}
-
-fn default_max_loaded_models() -> usize {
-    2
-}
-
-fn default_max_ctx() -> u32 {
-    32768
 }
 
 impl Config {
     pub fn from_env() -> Self {
-        let gateway_host =
-            std::env::var("AGENTIX_GATEWAY_HOST").unwrap_or_else(|_| default_gateway_host());
-
-        let gateway_port = std::env::var("AGENTIX_GATEWAY_PORT")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or_else(default_gateway_port);
-
-        let ollama_base_url =
-            std::env::var("OLLAMA_BASE_URL").unwrap_or_else(|_| default_ollama_base_url());
-
-        let models_dir = std::env::var("AGENTIX_MODELS_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| default_models_dir());
-
-        let vram_limit_bytes = std::env::var("AGENTIX_VRAM_LIMIT_BYTES")
-            .ok()
-            .and_then(|v| v.parse().ok());
-
-        let max_loaded_models = std::env::var("AGENTIX_MAX_LOADED_MODELS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or_else(default_max_loaded_models);
-
-        let max_ctx = std::env::var("AGENTIX_MAX_CTX")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or_else(default_max_ctx);
-
         Self {
-            gateway_host,
-            gateway_port,
-            ollama_base_url,
-            models_dir,
-            vram_limit_bytes,
-            max_loaded_models,
-            max_ctx,
+            gateway_host: std::env::var("AGENTIX_GATEWAY_HOST")
+                .unwrap_or_else(|_| "[::]".into()),
+            gateway_port: std::env::var("AGENTIX_GATEWAY_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(11434),
+            ollama_base_url: std::env::var("OLLAMA_BASE_URL")
+                .unwrap_or_else(|_| "http://localhost:11434".into()),
+            llama_socket: std::env::var("AGENTIX_LLAMA_SOCKET")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("/run/agentix/llama.sock")),
+            whisper_socket: std::env::var("AGENTIX_WHISPER_SOCKET")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("/run/agentix/whisper.sock")),
             agentix_api_key: std::env::var("AGENTIX_API_KEY").ok(),
             anthropic_api_key: std::env::var("ANTHROPIC_API_KEY").ok(),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),

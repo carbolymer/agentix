@@ -7,6 +7,10 @@ description = "LlamaCpp inference backend for agentix"
 
 build = "build.rs"
 
+[[bin]]
+name = "agentix-llama"
+path = "src/main.rs"
+
 [lints]
 workspace = true
 
@@ -14,6 +18,7 @@ workspace = true
 cuda = ["llama-cpp-2/cuda"]
 
 [dependencies]
+agentix-api = { path = "../agentix-api" }
 agentix-infer = { path = "../agentix-infer" }
 llama-cpp-2 = "0.1"
 tokio = { version = "1", features = ["full"] }
@@ -21,6 +26,11 @@ tokio-stream = "0.1"
 async-trait = "0.1"
 thiserror = "2"
 tracing = "0.1"
+# Binary-only deps (HTTP server, logging)
+axum = { version = "0.8", features = ["json"] }
+anyhow = "1"
+serde_json = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 agentix-infer = { path = "../agentix-infer" }

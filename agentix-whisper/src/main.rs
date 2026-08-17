@@ -6,7 +6,7 @@
 //! Environment variables:
 //!   AGENTIX_WHISPER_SOCKET  Unix socket path (default /run/agentix/whisper.sock)
 //!   AGENTIX_MODELS_DIR      Model store directory (default /var/lib/agentix/models)
-//!   AGENTIX_WHISPER_MODEL   Model name pre-loaded at startup (default ggml-tiny.en.bin)
+//!   AGENTIX_WHISPER_MODELS  Comma-separated models to pull (if absent) and load at startup
 
 use agentix_infer::{InferConfig, InferEngine};
 use agentix_whisper::{decode_audio_to_pcm, WhisperBackend};
@@ -24,7 +24,6 @@ use tracing::info;
 #[derive(Clone)]
 struct AppState {
     engine: InferEngine,
-    model_name: String,
     shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
 }
 
@@ -44,26 +43,27 @@ async fn main() -> anyhow::Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/var/lib/agentix/models"));
 
-    let model_name = std::env::var("AGENTIX_WHISPER_MODEL")
-        .unwrap_or_else(|_| "ggml-tiny.en.bin".to_string());
-
     let cfg = InferConfig::new(models_dir, None, 1, 0);
     let engine = InferEngine::new(cfg).await?;
     engine.register_backend(Arc::new(WhisperBackend));
 
-    if let Err(e) = engine.warmup(&model_name).await {
-        tracing::warn!(
-            model = %model_name,
-            err = %e,
-            "whisper model not yet registered — transcription will fail until the model is pulled"
-        );
+    for model in parse_model_list("AGENTIX_WHISPER_MODELS") {
+        info!(model = %model, "preloading whisper model");
+        match engine.pull(&model).await {
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(model = %model, err = %e, "preload pull failed — skipping");
+                continue;
+            }
+        }
+        if let Err(e) = engine.warmup(&model).await {
+            tracing::warn!(model = %model, err = %e, "preload warmup failed");
+        }
     }
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-    let model_display = model_name.clone();
     let state = AppState {
         engine,
-        model_name,
         shutdown_tx: Arc::new(Mutex::new(Some(shutdown_tx))),
     };
 
@@ -78,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
     // Remove stale socket from a previous run before binding.
     let _ = std::fs::remove_file(&socket_path);
     let listener = tokio::net::UnixListener::bind(&socket_path)?;
-    info!(socket = %socket_path, model = %model_display, "agentix-whisper listening");
+    info!(socket = %socket_path, "agentix-whisper listening");
 
     axum::serve(listener, router)
         .with_graceful_shutdown(async move {
@@ -198,8 +198,24 @@ async fn transcription_handler(State(state): State<AppState>, mut multipart: Mul
         Some(b) => b,
         None => return (StatusCode::BAD_REQUEST, "missing required field: file").into_response(),
     };
-    // Default to the daemon's configured model if client doesn't specify one.
-    let model = model.unwrap_or_else(|| state.model_name.clone());
+
+    // If client omits the model field, pick the first loaded whisper model.
+    let model = match model {
+        Some(m) => m,
+        None => {
+            let loaded = state.engine.list().await;
+            match loaded.into_iter().next() {
+                Some(m) => m.name,
+                None => {
+                    return (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "no whisper model is loaded — pull one first with POST /api/pull",
+                    )
+                        .into_response()
+                }
+            }
+        }
+    };
 
     if audio.is_empty() {
         return (StatusCode::UNPROCESSABLE_ENTITY, "audio file is empty").into_response();
@@ -222,7 +238,7 @@ async fn transcription_handler(State(state): State<AppState>, mut multipart: Mul
         Ok(text) => Json(agentix_api::TranscriptionResponse { text }).into_response(),
         Err(agentix_infer::InferError::ModelNotFound(_)) => (
             StatusCode::NOT_FOUND,
-            format!("model '{model}' not found — pull it first"),
+            format!("model '{model}' not found — pull it first with POST /api/pull"),
         )
             .into_response(),
         Err(agentix_infer::InferError::CapabilityMissing(m, _)) => (
@@ -241,4 +257,14 @@ async fn transcription_handler(State(state): State<AppState>, mut multipart: Mul
         )
             .into_response(),
     }
+}
+
+fn parse_model_list(var: &str) -> Vec<String> {
+    std::env::var(var)
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
 }

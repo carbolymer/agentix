@@ -8,18 +8,15 @@ license = "Apache-2.0"
 name = "agentix-daemon"
 path = "src/main.rs"
 
-[features]
-cuda = ["agentix-llama/cuda"]
-
 [lints]
 workspace = true
 
 [dependencies]
 agentix-api = { path = "../agentix-api" }
 agentix-router = { path = "../agentix-router" }
-agentix-infer = { path = "../agentix-infer" }
-agentix-llama = { path = "../agentix-llama" }
 axum = { version = "0.8", features = ["json"] }
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }

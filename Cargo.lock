@@ -38,12 +38,11 @@ name = "agentix-daemon"
 version = "0.1.0"
 dependencies = [
  "agentix-api",
- "agentix-infer",
- "agentix-llama",
  "agentix-router",
- "agentix-whisper",
  "anyhow",
  "axum",
+ "hyper",
+ "hyper-util",
  "reqwest",
  "serde",
  "serde_json",
@@ -139,14 +138,19 @@ dependencies = [
 name = "agentix-llama"
 version = "0.1.0"
 dependencies = [
+ "agentix-api",
  "agentix-infer",
+ "anyhow",
  "async-trait",
+ "axum",
  "llama-cpp-2",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-stream",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -191,13 +195,18 @@ dependencies = [
 name = "agentix-whisper"
 version = "0.1.0"
 dependencies = [
+ "agentix-api",
  "agentix-infer",
+ "anyhow",
  "async-trait",
+ "axum",
  "rubato",
+ "serde_json",
  "symphonia",
  "tempfile",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "whisper-rs",
 ]
 

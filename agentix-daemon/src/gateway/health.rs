@@ -9,19 +9,10 @@ pub async fn handler(State(state): State<AppState>) -> impl IntoResponse {
         "passthrough"
     };
 
-    let local_models = state.infer.list().await;
-    let backends = state.infer.backend_names();
-    let infer_active = !backends.is_empty();
-    let infer_status = serde_json::json!({
-        "active": infer_active,
-        "backends": backends,
-        "model_count": local_models.len(),
-        "models": local_models.iter().map(|m| &m.name).collect::<Vec<_>>(),
-    });
-
     axum::Json(serde_json::json!({
         "status": "ok",
-        "infer": infer_status,
+        "llama_socket": cfg.llama_socket,
+        "whisper_socket": cfg.whisper_socket,
         "ollama_url": cfg.ollama_base_url,
         "anthropic_auth": anthropic_auth,
         "openai_proxy": cfg.openai_api_key.is_some(),

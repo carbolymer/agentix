@@ -70,6 +70,7 @@
         cp ${stubMain} $out/agentix-indexer/src/main.rs
         mkdir -p $out/agentix-llama/src
         cp ${stubLib} $out/agentix-llama/src/lib.rs
+        cp ${stubMain} $out/agentix-llama/src/main.rs
         mkdir -p $out/agentix-whisper/src
         cp ${stubLib} $out/agentix-whisper/src/lib.rs
         cp ${stubMain} $out/agentix-whisper/src/main.rs
@@ -163,17 +164,12 @@
       );
     };
 
+    # agentix-daemon is now pure Rust (no C++ deps) — no CUDA feature or cudaArgs needed.
     agentixDaemonPkg = craneLib.buildPackage (commonArgs
-      // cudaArgs
       // {
         src = agentixSrc;
-        cargoArtifacts = if withCuda then cudaCargoArtifacts.value else cargoArtifacts;
-        cargoExtraArgs =
-          "--package agentix-daemon"
-          + lib.optionalString withCuda " --features cuda";
-        # libcuda.so.1 is the NVIDIA driver API — present on the host at
-        # runtime but never in the Nix store at build time.
-        autoPatchelfIgnoreMissingDeps = lib.optional withCuda "libcuda.so.1";
+        inherit cargoArtifacts;
+        cargoExtraArgs = "--package agentix-daemon";
       });
 
     agentixWhisperPkg = craneLib.buildPackage (commonArgs
@@ -181,6 +177,18 @@
         src = agentixSrc;
         inherit cargoArtifacts;
         cargoExtraArgs = "--package agentix-whisper";
+      });
+
+    # agentix-llama carries the llama-cpp-2 C++ build and links CUDA when available.
+    agentixLlamaPkg = craneLib.buildPackage (commonArgs
+      // cudaArgs
+      // {
+        src = agentixSrc;
+        cargoArtifacts = if withCuda then cudaCargoArtifacts.value else cargoArtifacts;
+        cargoExtraArgs =
+          "--package agentix-llama"
+          + lib.optionalString withCuda " --features cuda";
+        autoPatchelfIgnoreMissingDeps = lib.optional withCuda "libcuda.so.1";
       });
 
     axPkg = craneLib.buildPackage (commonArgs
@@ -260,6 +268,7 @@
           cp ${stubMain} $out/agentix-indexer/src/main.rs
           mkdir -p $out/agentix-llama/src
           cp ${stubLib} $out/agentix-llama/src/lib.rs
+          cp ${stubMain} $out/agentix-llama/src/main.rs
           mkdir -p $out/agentix-whisper/src
           cp ${stubLib} $out/agentix-whisper/src/lib.rs
           cp ${stubMain} $out/agentix-whisper/src/main.rs
@@ -448,6 +457,11 @@
   in {
     packages.agentix-whisper = agentixWhisperPkg;
 
+    packages.agentix-llama = pkgs.writeShellScriptBin "agentix-llama" ''
+      export LD_LIBRARY_PATH="/run/opengl-driver/lib:${cudaPackages.cuda_cudart}/lib:${cudaPackages.libcublas}/lib:''${LD_LIBRARY_PATH:-}"
+      exec ${agentixLlamaPkg}/bin/agentix-llama "$@"
+    '';
+
     packages.agentix-mcp-server = agentixMcpServerPkg;
 
     packages.agentix-indexer = agentixIndexerPkg;
@@ -457,7 +471,6 @@
     # name: crane names derivations after the root crate (mcp-server-0.1.0),
     # so nix run .#agentix-daemon would try to exec 'mcp-server' without this.
     packages.agentix-daemon = pkgs.writeShellScriptBin "agentix-daemon" ''
-      export LD_LIBRARY_PATH="/run/opengl-driver/lib:${cudaPackages.cuda_cudart}/lib:${cudaPackages.libcublas}/lib:''${LD_LIBRARY_PATH:-}"
       exec ${agentixDaemonPkg}/bin/agentix-daemon "$@"
     '';
 
