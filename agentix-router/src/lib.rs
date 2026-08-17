@@ -32,7 +32,11 @@ impl Router {
         }
 
         if m.contains('/') {
-            // provider/model syntax always goes via OpenRouter
+            // HuggingFace local refs contain a colon: "org/repo:tag" or "hf.co/org/repo:file.gguf"
+            // Cloud provider refs are bare "provider/model" with no colon.
+            if m.starts_with("hf.co/") || m.contains(':') {
+                return RouteTarget::Local;
+            }
             return RouteTarget::OpenRouter;
         }
 
@@ -112,6 +116,26 @@ mod tests {
             RouteTarget::OpenRouter
         );
         assert_eq!(r.route("openai/gpt-4o"), RouteTarget::OpenRouter);
+    }
+
+    #[test]
+    fn hf_refs_are_local() {
+        let r = Router::new();
+        // org/repo:tag — colon distinguishes from cloud provider/model
+        assert_eq!(
+            r.route("bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF:Q4_K_M"),
+            RouteTarget::Local
+        );
+        // explicit hf.co/ prefix
+        assert_eq!(
+            r.route("hf.co/jinaai/jina-code-embeddings-1.5b-GGUF:Q8_0"),
+            RouteTarget::Local
+        );
+        // Ollama-style registry ref
+        assert_eq!(
+            r.route("registry.ollama.ai/library/deepseek-r1:7b"),
+            RouteTarget::Local
+        );
     }
 
     #[test]

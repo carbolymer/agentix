@@ -31,6 +31,7 @@ pub struct AppState {
 pub fn router(model_router: Arc<ModelRouter>, config: Config) -> anyhow::Result<Router> {
     let http = reqwest::Client::builder()
         .user_agent("agentix-daemon/0.1")
+        .timeout(std::time::Duration::from_secs(2))
         .build()
         .context("failed to build HTTP client")?;
 
@@ -220,16 +221,6 @@ async fn models_handler(State(state): State<AppState>) -> impl IntoResponse {
         models.push(
             serde_json::json!({"id":"openrouter/*","object":"model","owned_by":"openrouter"}),
         );
-    }
-
-    // Also check Ollama for any additional models
-    let ollama_url = format!("{}/v1/models", state.config.ollama_base_url);
-    if let Ok(resp) = state.http.get(&ollama_url).send().await {
-        if let Ok(body) = resp.json::<serde_json::Value>().await {
-            if let Some(data) = body["data"].as_array() {
-                models.extend_from_slice(data);
-            }
-        }
     }
 
     axum::Json(serde_json::json!({ "object": "list", "data": models }))
