@@ -118,11 +118,7 @@ async fn pull_handler(State(state): State<AppState>, body: axum::body::Bytes) ->
     tracing::info!(model = %name, "pull requested");
     match state.engine.pull(&name).await {
         Ok(_) => StatusCode::OK.into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("pull failed: {e}"),
-        )
-            .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("pull failed: {e}")).into_response(),
     }
 }
 
@@ -138,11 +134,7 @@ async fn delete_handler(State(state): State<AppState>, body: axum::body::Bytes) 
     tracing::info!(model = %name, "delete requested");
     match state.engine.remove(&name).await {
         Ok(()) => StatusCode::OK.into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("delete failed: {e}"),
-        )
-            .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("delete failed: {e}")).into_response(),
     }
 }
 
@@ -156,10 +148,7 @@ async fn shutdown_handler(State(state): State<AppState>) -> Response {
     }
 }
 
-async fn transcription_handler(
-    State(state): State<AppState>,
-    mut multipart: Multipart,
-) -> Response {
+async fn transcription_handler(State(state): State<AppState>, mut multipart: Multipart) -> Response {
     let mut audio_bytes: Option<Vec<u8>> = None;
     let mut model: Option<String> = None;
 
@@ -168,10 +157,7 @@ async fn transcription_handler(
             Ok(Some(f)) => f,
             Ok(None) => break,
             Err(e) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    format!("multipart parse error: {e}"),
-                )
+                return (StatusCode::BAD_REQUEST, format!("multipart parse error: {e}"))
                     .into_response()
             }
         };

@@ -28,8 +28,10 @@ pub async fn forward(
                 format!("backend unavailable: {e}"),
             )
                 .into_response();
-            resp.headers_mut()
-                .insert("retry-after", HeaderValue::from_static("1"));
+            resp.headers_mut().insert(
+                "retry-after",
+                HeaderValue::from_static("1"),
+            );
             return resp;
         }
     };
@@ -84,11 +86,7 @@ pub async fn forward(
     let hyper_resp = match sender.send_request(hyper_req).await {
         Ok(r) => r,
         Err(e) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                format!("backend request failed: {e}"),
-            )
-                .into_response()
+            return (StatusCode::BAD_GATEWAY, format!("backend request failed: {e}")).into_response()
         }
     };
 

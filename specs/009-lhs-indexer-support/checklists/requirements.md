@@ -1,7 +1,7 @@
-# Specification Quality Checklist: Fix gh Jail to Allow All GitHub Remotes
+# Specification Quality Checklist: Literate Haskell (.lhs) Indexer Support
 
 **Purpose**: Validate specification completeness and quality before proceeding to planning
-**Created**: 2026-08-18
+**Created**: 2026-08-13
 **Feature**: [spec.md](../spec.md)
 
 ## Content Quality
@@ -31,4 +31,4 @@
 
 ## Notes
 
-All items pass. Spec is ready for `/speckit.plan`.
+All items pass. Spec is ready for `/speckit.clarify` or `/speckit.plan`.

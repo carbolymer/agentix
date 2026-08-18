@@ -1,5 +1,10 @@
 use super::{proxy, AppState};
-use axum::{body::Body, extract::State, http::HeaderMap, response::Response};
+use axum::{
+    body::Body,
+    extract::State,
+    http::HeaderMap,
+    response::Response,
+};
 
 // ── /api/pull ─────────────────────────────────────────────────────────────────
 
@@ -64,3 +69,4 @@ pub async fn show_handler(
     )
     .await
 }
+
