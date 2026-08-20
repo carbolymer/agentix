@@ -109,6 +109,17 @@ fn main() -> Result<()> {
         ],
     );
 
+    // Scripts commonly use #!/usr/bin/env <interpreter>; NixOS has no /usr/bin.
+    push(&mut b, &["--dir", "/usr/bin"]);
+    push(
+        &mut b,
+        &[
+            "--symlink",
+            &format!("{}/bin/env", home.display()),
+            "/usr/bin/env",
+        ],
+    );
+
     // ~/.gitconfig — read-only for git identity
     ro_bind_if_exists(
         &mut b,

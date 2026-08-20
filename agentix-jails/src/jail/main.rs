@@ -268,6 +268,17 @@ fn main() -> Result<()> {
         ],
     );
 
+    // Scripts commonly use #!/usr/bin/env <interpreter>; NixOS has no /usr/bin.
+    push(&mut b, &["--dir", "/usr/bin"]);
+    push(
+        &mut b,
+        &[
+            "--symlink",
+            &format!("{}/bin/env", home.display()),
+            "/usr/bin/env",
+        ],
+    );
+
     let dot_claude = home.join(".claude");
     if !dot_claude.exists() {
         fs::create_dir_all(&dot_claude).context("creating ~/.claude")?;
