@@ -39,6 +39,11 @@ struct Args {
     #[arg(long = "repo", value_name = "OWNER/REPO")]
     allowed_repos: Vec<String>,
 
+    /// Allow the gh proxy to access any GitHub repo (no allowlist).
+    /// By default only repos found in git remotes (plus any --repo flags) are allowed.
+    #[arg(long = "all-repos")]
+    all_repos: bool,
+
     /// Skip starting the gh proxy (no gh available inside the jail).
     #[arg(long = "no-github-auth")]
     no_github_auth: bool,
@@ -168,18 +173,24 @@ fn main() -> Result<()> {
     let gitconfig_host_path = write_synthetic_gitconfig(gitconfig_dir.path())?;
 
     // Build the allowed-repos list: all GitHub remotes + any explicit --repo flags.
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut allowed_repos: Vec<String> = Vec::new();
-    for repo in github_repos_from_all_remotes(&cwd) {
-        if seen.insert(repo.clone()) {
-            allowed_repos.push(repo);
+    // When --all-repos is set, pass an empty list so the server allows everything.
+    let allowed_repos: Vec<String> = if args.all_repos {
+        Vec::new()
+    } else {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut repos: Vec<String> = Vec::new();
+        for repo in github_repos_from_all_remotes(&cwd) {
+            if seen.insert(repo.clone()) {
+                repos.push(repo);
+            }
         }
-    }
-    for repo in &args.allowed_repos {
-        if seen.insert(repo.clone()) {
-            allowed_repos.push(repo.clone());
+        for repo in &args.allowed_repos {
+            if seen.insert(repo.clone()) {
+                repos.push(repo.clone());
+            }
         }
-    }
+        repos
+    };
 
     // Start the gh proxy server (unless opted out).
     // The TempDir is kept in the tuple so it lives until gh_proxy drops (after bwrap exits).
